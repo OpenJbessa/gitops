@@ -1,0 +1,136 @@
+# ---------------------------------------------------------------------------
+# Worker de file — même image que l'API, commande différente.
+# Budget : 128 Mo de request par réplica, 192 Mo de limite.
+#
+# Déploiement séparé et non un second conteneur dans le pod de l'API : les deux
+# n'ont ni le même profil de charge ni la même règle d'échelle. L'API sert des
+# requêtes courtes et reste à un réplica ; le worker consomme une file et monte
+# jusqu'à quatre. Les coller dans un même pod rendrait cet écart impossible.
+#
+# Le nombre de réplicas n'est PAS fixé ici : il est piloté par le ScaledObject
+# KEDA (scaledobject.yaml). `replicas` est donc volontairement absent du
+# manifeste, et l'Application ignore ce champ — sans quoi ArgoCD et KEDA se
+# battraient à chaque montée en charge.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: worker
+        app.kubernetes.io/part-of: workloads
+        app.kubernetes.io/managed-by: argocd
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      initContainers:
+        - name: prepare-storage
+          image: ghcr.io/openjbessa/api:placeholder
+          command:
+            - /bin/sh
+            - -c
+            - mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views
+          workingDir: /var/www/html
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: framework-storage
+              mountPath: /var/www/html/storage/framework
+
+      containers:
+        - name: worker
+          image: ghcr.io/openjbessa/api:placeholder
+          imagePullPolicy: IfNotPresent
+          command:
+            - php
+            - artisan
+            - queue:work
+            - --queue=default
+            - --tries=3
+            - --sleep=1
+            # Le processus se termine de lui-même au bout d'une heure et
+            # Kubernetes le relance : c'est la parade classique aux fuites
+            # mémoire lentes de PHP en processus long. Sur 192 Mo de plafond,
+            # une fuite ne met pas longtemps à se voir.
+            - --max-time=3600
+
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 192Mi
+
+          # Pas de sonde HTTP : le worker n'écoute sur aucun port. La vivacité
+          # se vérifie en constatant que le processus artisan tourne toujours.
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pgrep -f "artisan queue:work" > /dev/null
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: framework-storage
+              mountPath: /var/www/html/storage/framework
+
+      volumes:
+        - name: framework-storage
+          emptyDir:
+            sizeLimit: 64Mi
+
+      # Laisse au worker le temps de finir le job en cours avant d'être tué :
+      # au-delà, le job est repris par un autre réplica grâce à --tries.
+      terminationGracePeriodSeconds: 60

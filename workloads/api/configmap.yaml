@@ -1,0 +1,42 @@
+# Variables non sensibles. Tout ce qui est secret (APP_KEY, identifiants de
+# base) vit dans api-secrets, chiffré par SOPS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+data:
+  APP_ENV: production
+  APP_DEBUG: "false"
+  APP_URL: https://api.jbessa.tech
+
+  # Journaux sur la sortie d'erreur standard, et non dans storage/logs. C'est ce
+  # qui permet de garder le système de fichiers racine en lecture seule sans
+  # monter de volume supplémentaire, et de lire les journaux avec kubectl logs.
+  LOG_CHANNEL: stderr
+  LOG_LEVEL: info
+
+  # Service en écriture du cluster CloudNativePG. Le nom `postgres-rw` est
+  # généré par l'opérateur à partir du nom du Cluster.
+  DB_CONNECTION: pgsql
+  DB_HOST: postgres-rw.data.svc.cluster.local
+  DB_PORT: "5432"
+  DB_DATABASE: app
+
+  REDIS_HOST: redis.data.svc.cluster.local
+  REDIS_PORT: "6379"
+  REDIS_CLIENT: phpredis
+
+  # Session, cache et file sur Redis. Pour la session et le cache c'est une
+  # nécessité : le système de fichiers est en lecture seule et l'emptyDir
+  # disparaît à chaque redéploiement.
+  SESSION_DRIVER: redis
+  CACHE_STORE: redis
+  QUEUE_CONNECTION: redis
+  BROADCAST_CONNECTION: log
+
+  FILESYSTEM_DISK: local

@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# Flux de l'API. Le namespace `apps` refuse tout par défaut.
+#
+# Rappel de sémantique : une règle d'entrée se pose sur la destination, une
+# règle de sortie sur la source. Comme le refus par défaut porte sur les deux
+# sens, chaque flux inter-namespace demande DEUX règles — celle-ci pour la
+# sortie de l'API, et sa jumelle côté `data` pour l'entrée dans PostgreSQL ou
+# Redis (data/postgres/networkpolicy.yaml, data/redis/networkpolicy.yaml).
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Seul Traefik entre. Le front Nuxt appelle l'API depuis le navigateur, donc
+    # par l'extérieur : il n'a pas besoin d'un flux direct de pod à pod.
+    # Si le rendu côté serveur de Nuxt devait appeler l'API en interne, il
+    # faudrait ajouter ici une règle depuis le pod `web`.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+    # Sortie Internet — délibérément fermée. À ouvrir le jour où l'API appellera
+    # un service tiers (envoi d'e-mails, paiement, API externe) ; sans cette
+    # règle l'appel échoue par expiration de délai, sans message explicite.
+    # - to:
+    #     - ipBlock:
+    #         cidr: 0.0.0.0/0
+    #         except:
+    #           - 10.0.0.0/8
+    #           - 172.16.0.0/12
+    #           - 192.168.0.0/16
+    #   ports:
+    #     - protocol: TCP
+    #       port: 443

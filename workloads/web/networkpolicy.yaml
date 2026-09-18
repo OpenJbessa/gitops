@@ -1,0 +1,26 @@
+# Le front ne parle à personne en interne : il sert un build statique, et les
+# appels à l'API partent du navigateur du visiteur, donc de l'extérieur.
+# Sa seule sortie autorisée est le DNS (règle commune du namespace).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: web
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 3000

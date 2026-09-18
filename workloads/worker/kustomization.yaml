@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: apps
+
+resources:
+  - deployment.yaml
+  - scaledobject.yaml
+  - networkpolicy.yaml
+
+# Même image que l'API : le worker n'est que la même base de code lancée avec
+# une autre commande. Les deux tags doivent donc avancer ensemble, et la CI
+# applicative met à jour les deux kustomization.yaml dans la même pull request.
+images:
+  - name: ghcr.io/openjbessa/api
+    newTag: sha-REMPLACER_PAR_LE_PREMIER_DEPLOIEMENT

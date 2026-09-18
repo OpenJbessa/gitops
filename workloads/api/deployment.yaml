@@ -1,0 +1,153 @@
+# ---------------------------------------------------------------------------
+# API Laravel — un seul réplica.
+# Budget : 320 Mo de request, 480 Mo de limite.
+#
+# `strategy: Recreate` et non RollingUpdate : avec un seul réplica, une mise à
+# jour progressive ferait cohabiter ancien et nouveau pod, soit 640 Mo réservés
+# pendant la bascule. Sur 8 Go partagés par quinze charges, c'est ce qui
+# déclencherait l'éviction de quelque chose d'autre. Recreate coupe l'API
+# quelques secondes — c'est l'interruption assumée dès le départ.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/component: http
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+      app.kubernetes.io/component: http
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
+        app.kubernetes.io/component: http
+        app.kubernetes.io/part-of: workloads
+        app.kubernetes.io/managed-by: argocd
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Laravel attend que storage/framework contienne ses trois
+      # sous-répertoires. Le volume étant un emptyDir, il démarre vide à chaque
+      # création de pod : sans cette étape, le premier rendu de vue échoue.
+      initContainers:
+        - name: prepare-storage
+          image: ghcr.io/openjbessa/api:placeholder
+          command:
+            - /bin/sh
+            - -c
+            - mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views
+          workingDir: /var/www/html
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: framework-storage
+              mountPath: /var/www/html/storage/framework
+
+      containers:
+        - name: api
+          # Le tag est posé par le transformateur `images` de kustomization.yaml,
+          # seul endroit que la CI applicative modifie (par pull request).
+          image: ghcr.io/openjbessa/api:placeholder
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 320Mi
+            limits:
+              memory: 480Mi
+
+          # Sondes délibérément tolérantes. Le nœud est partagé par PostgreSQL,
+          # VictoriaMetrics et Teleport : un pic d'entrées-sorties chez le
+          # voisin allonge les temps de réponse sans que l'API soit en faute.
+          # Des seuils serrés provoqueraient des redémarrages en cascade.
+          startupProbe:
+            httpGet:
+              path: /up
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /up
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+
+          volumeMounts:
+            # Seul chemin inscriptible du conteneur. Tout le reste est en
+            # lecture seule, y compris le code.
+            - name: framework-storage
+              mountPath: /var/www/html/storage/framework
+
+      volumes:
+        - name: framework-storage
+          emptyDir:
+            # Sur disque et non en mémoire : un emptyDir `medium: Memory` est
+            # décompté du plafond mémoire du pod, ce qui rognerait les 480 Mo.
+            sizeLimit: 128Mi
+
+      terminationGracePeriodSeconds: 30

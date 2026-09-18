@@ -1,0 +1,38 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: apps
+
+generators:
+  - ./secret-generator.yaml
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - configmap.yaml
+  - migrate-job.yaml
+  - ingressroute.yaml
+  - networkpolicy.yaml
+
+# `envFrom.secretRef` référence le secret par un nom fixe : pas de suffixe.
+generatorOptions:
+  disableNameSuffixHash: true
+
+# ---------------------------------------------------------------------------
+# Tag de l'image — LE SEUL POINT QUE LA CI APPLICATIVE MODIFIE.
+#
+# Le dépôt applicatif ne parle jamais au cluster. Après avoir construit et signé
+# l'image, sa CI ouvre une pull request ICI :
+#
+#   cd workloads/api
+#   kustomize edit set image ghcr.io/openjbessa/api=ghcr.io/openjbessa/api:sha-$GITHUB_SHA
+#
+# La ligne `newTag` ci-dessous est la seule à changer. ArgoCD fait le reste au
+# merge, en commençant par le hook PreSync de migration.
+#
+# Pas d'annotation Renovate : un tag de SHA de commit n'a pas d'ordre que
+# Renovate puisse comparer. C'est la CI applicative qui le fait avancer.
+# ---------------------------------------------------------------------------
+images:
+  - name: ghcr.io/openjbessa/api
+    newTag: sha-REMPLACER_PAR_LE_PREMIER_DEPLOIEMENT

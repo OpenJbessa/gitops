@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------------------
+# Migrations de base — hook PreSync ArgoCD.
+#
+# Pourquoi un hook et jamais un `artisan migrate` au démarrage du conteneur :
+#   - au démarrage, chaque redémarrage de pod rejouerait la vérification, et un
+#     CrashLoopBackOff sur une migration cassée boucle indéfiniment ;
+#   - le hook s'exécute UNE fois, AVANT que le nouveau Deployment soit appliqué.
+#     Si la migration échoue, la synchronisation s'arrête et l'ancienne version
+#     de l'API continue de tourner sur l'ancien schéma. C'est exactement le
+#     comportement qu'on veut.
+#
+# `hook-delete-policy: HookSucceeded` : le Job disparaît quand il réussit, et
+# reste quand il échoue — c'est là qu'on a besoin de ses journaux.
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-migrate
+  namespace: apps
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/component: migrate
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  # Deux reprises : couvre une base momentanément injoignable, sans s'acharner
+  # sur une migration réellement cassée.
+  backoffLimit: 2
+  # Une migration qui dépasse dix minutes sur cette base a un problème qu'un
+  # délai plus long ne résoudra pas ; au-delà, elle bloque la synchronisation.
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        # Même nom que l'API : les NetworkPolicies qui ouvrent l'accès à
+        # PostgreSQL sélectionnent sur ce label et couvrent donc ce Job.
+        app.kubernetes.io/name: api
+        app.kubernetes.io/component: migrate
+        app.kubernetes.io/part-of: workloads
+        app.kubernetes.io/managed-by: argocd
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/openjbessa/api:placeholder
+          command:
+            - php
+            - artisan
+            - migrate
+            - --force
+            - --no-interaction
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 384Mi
+          volumeMounts:
+            - name: framework-storage
+              mountPath: /var/www/html/storage/framework
+      volumes:
+        - name: framework-storage
+          emptyDir:
+            sizeLimit: 64Mi

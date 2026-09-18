@@ -1,0 +1,21 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: web
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # L'apex et le www pointent vers le même service. Le wildcard Let's Encrypt
+    # couvre le second, le nom explicite du certificat couvre le premier.
+    - kind: Rule
+      match: Host(`jbessa.tech`) || Host(`www.jbessa.tech`)
+      services:
+        - name: web
+          port: 3000
+  tls: {}

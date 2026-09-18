@@ -1,0 +1,28 @@
+# Le worker n'expose rien : personne ne l'appelle. Seules ses sorties comptent.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+      ports:
+        # Redis pour consommer la file, PostgreSQL parce qu'un job touche
+        # presque toujours la base.
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 5432

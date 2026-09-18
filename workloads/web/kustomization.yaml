@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: apps
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - ingressroute.yaml
+  - networkpolicy.yaml
+
+# Modifié par la CI du dépôt front, par pull request :
+#   kustomize edit set image ghcr.io/openjbessa/web=ghcr.io/openjbessa/web:sha-$GITHUB_SHA
+images:
+  - name: ghcr.io/openjbessa/web
+    newTag: sha-REMPLACER_PAR_LE_PREMIER_DEPLOIEMENT

@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# Autoscaling du worker sur le retard du consumer group Redis.
+#
+# LE PLAFOND DE 4 N'EST PAS UN CHIFFRE ROND, IL DÉCOULE DU BUDGET MÉMOIRE :
+#   4 réplicas × 128 Mo de request = 512 Mo
+#   moins le réplica permanent déjà compté au budget  = +384 Mo au pic
+#   total de la plateforme au pic : 3 870 + 384 = 4 254 Mo sur 4 600 autorisés
+# Passer à 5 ferait sortir la plateforme de son enveloppe et mettrait le nœud
+# en pression mémoire — c'est-à-dire en éviction, probablement de PostgreSQL,
+# qui est la plus grosse charge du cluster. Ce plafond est une contrainte
+# physique, pas un réglage de confort.
+# ---------------------------------------------------------------------------
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  scaleTargetRef:
+    name: worker
+
+  # Jamais zéro : un worker à froid doit recharger tout le conteneur PHP avant
+  # de traiter son premier job. Garder un réplica permanent coûte 128 Mo et
+  # supprime cette latence de démarrage.
+  minReplicaCount: 1
+  maxReplicaCount: 4
+
+  # Interroge Redis toutes les 15 secondes. Plus court n'apporterait rien : le
+  # temps de démarrage d'un pod worker domine largement.
+  pollingInterval: 15
+
+  # Cinq minutes avant de redescendre. Une file est rarement lisse : sans cette
+  # inertie, le worker monterait et descendrait en permanence, et chaque cycle
+  # coûte un démarrage de conteneur complet.
+  cooldownPeriod: 300
+
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 2
+              periodSeconds: 60
+
+  triggers:
+    - type: redis-streams
+      metadata:
+        address: redis.data.svc.cluster.local:6379
+        # Nom du stream et du consumer group côté application. À aligner sur ce
+        # que produit le code : ce déclencheur mesure le retard d'un consumer
+        # group de stream Redis (XINFO GROUPS), pas la longueur d'une liste.
+        # Si la file reste sur le pilote `redis` par défaut de Laravel, qui
+        # s'appuie sur des listes, il faut basculer ce déclencheur en
+        # `type: redis` avec `listName` et `listLength`.
+        stream: default
+        consumerGroup: workers
+        # Au-delà de 50 messages en retard, on ajoute un réplica.
+        lagCount: "50"
+        # En dessous de 5, la file est considérée comme vide : évite de monter
+        # en charge pour trois messages.
+        activationLagCount: "5"
+        enableTLS: "false"
