@@ -144,17 +144,19 @@ repoServer:
     - name: install-ksops
       # renovate: datasource=docker depName=viaductoss/ksops
       image: viaductoss/ksops:v4.5.1
+      # L'image est distroless : ni shell, ni `cp`, ni `chmod`. Toute tentative
+      # de la piloter par `/bin/sh -c` échoue à la création du conteneur avec
+      # « exec: /bin/sh: no such file or directory », avant même que la commande
+      # ne soit lue.
+      #
+      # Le binaire sait donc se déployer lui-même : `ksops install` copie ksops
+      # et, avec --with-kustomize, la version de kustomize compatible avec son
+      # API de plugin. C'est la méthode retenue en amont depuis la v4.4.
       command:
-        - /bin/sh
-        - -c
-      args:
-        # `cp` et non `mv` comme dans la doc amont : la racine du conteneur est
-        # montée en lecture seule, un `mv` échouerait sur l'unlink de la source.
-        - |
-          set -eu
-          cp "$(command -v ksops)" /custom-tools/ksops
-          cp "$(command -v kustomize)" /custom-tools/kustomize
-          chmod +x /custom-tools/ksops /custom-tools/kustomize
+        - /usr/local/bin/ksops
+        - install
+        - --with-kustomize
+        - /custom-tools
       volumeMounts:
         - name: custom-tools
           mountPath: /custom-tools
