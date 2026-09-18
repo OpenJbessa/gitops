@@ -1,0 +1,393 @@
+# ---------------------------------------------------------------------------
+# ArgoCD — profil « nœud K3s unique, 8 Go »
+#
+# Budget alloué : 450 Mo de requests / 650 Mo de limites, à répartir entre les
+# quatre composants conservés :
+#   application-controller  192 Mo / 256 Mo
+#   repo-server             128 Mo / 192 Mo
+#   server (API + UI)        64 Mo /  96 Mo
+#   redis                    64 Mo /  96 Mo
+#   ------------------------------------------
+#   total                   448 Mo / 640 Mo
+#
+# Ce fichier est la source de vérité UNIQUE de la configuration d'ArgoCD.
+# Il est consommé deux fois, et c'est voulu :
+#   1. à l'amorçage, par le `helm install` manuel (cf. README) ;
+#   2. ensuite par l'Application `argocd` (apps/platform/argocd.yaml) qui le
+#      référence via $values — ArgoCD se gère alors lui-même.
+# Les deux rendus étant strictement identiques, l'adoption par ArgoCD produit
+# un diff vide et ne redémarre aucun pod.
+# ---------------------------------------------------------------------------
+
+global:
+  domain: argocd.jbessa.tech
+
+  # Le namespace argocd porte les labels PSA « restricted » : aucun pod ne peut
+  # tourner en root ni escalader ses privilèges.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Aucune limite CPU n'est posée dans tout ce dépôt. Sur un nœud unique le
+  # throttling CFS allonge les réconciliations sans rien protéger : la mémoire
+  # est la seule ressource réellement contendue, c'est la seule plafonnée.
+
+  logging:
+    level: info
+    format: text
+
+# Les CRD restent installées par le chart, mais ne sont jamais supprimées par un
+# prune : perdre la CRD Application détruirait l'inventaire de tout le cluster.
+crds:
+  install: true
+  keep: true
+
+# ---------------------------------------------------------------------------
+# Composants désactivés
+# Mono-tenant, un seul opérateur humain : ces trois briques ne coûteraient que
+# de la RAM et de la surface d'attaque.
+# ---------------------------------------------------------------------------
+
+# Authentification locale uniquement (compte admin). Pas d'OIDC à fédérer.
+dex:
+  enabled: false
+
+# Aucun ApplicationSet : le pattern app-of-apps suffit pour ~20 Applications
+# décrites explicitement, et un générateur masquerait l'ordonnancement en waves.
+#
+# Le chart 10.x ne propose PLUS de `applicationSet.enabled` — vérifié sur
+# 10.9.1, ni `enabled` ni `install` n'existent et le Deployment est rendu quoi
+# qu'il arrive. Le mettre à zéro réplica est le seul moyen de ne pas payer ce
+# contrôleur : le Deployment reste décrit, aucun pod ne tourne, zéro mémoire.
+applicationSet:
+  replicas: 0
+
+# Les alertes de déploiement passent par Alertmanager, pas par un second
+# système de notification.
+notifications:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Application controller
+# Premier poste mémoire d'ArgoCD : il maintient en cache l'état de toutes les
+# ressources du cluster. C'est ce cache qu'on rogne, pas le nombre de replicas.
+# ---------------------------------------------------------------------------
+controller:
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      memory: 256Mi
+
+  env:
+    # Le GC Go se déclenche à 90 % de la limite au lieu d'attendre l'OOMKill.
+    - name: GOMEMLIMIT
+      value: "230MiB"
+
+  # Défauts amont : 20 et 10. Sur ~20 Applications qui se synchronisent par
+  # vagues, 4 et 2 suffisent et divisent le nombre de goroutines concurrentes.
+  # (Repris aussi dans configs.params pour rester cohérent avec l'argocd-cmd-params-cm.)
+
+  metrics:
+    enabled: true
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8082"
+    prometheus.io/path: "/metrics"
+
+  containerSecurityContext:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+# ---------------------------------------------------------------------------
+# Repo server
+# C'est lui qui rend les charts Helm et exécute kustomize — donc KSOPS.
+# ---------------------------------------------------------------------------
+repoServer:
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 192Mi
+
+  env:
+    - name: GOMEMLIMIT
+      value: "170MiB"
+    # SOPS cherche sa configuration sous $XDG_CONFIG_HOME ; la clé age privée
+    # est montée plus bas depuis le secret `sops-age`.
+    - name: XDG_CONFIG_HOME
+      value: /.config
+    - name: SOPS_AGE_KEY_FILE
+      value: /.config/sops/age/keys.txt
+
+  # KSOPS est installé comme plugin exec de kustomize plutôt qu'en sidecar CMP :
+  # un initContainer ne consomme de la mémoire qu'au démarrage du pod, là où un
+  # sidecar en réserverait en permanence sur un budget de 128 Mo.
+  initContainers:
+    - name: install-ksops
+      # renovate: datasource=docker depName=viaductoss/ksops
+      image: viaductoss/ksops:v4.5.1
+      command:
+        - /bin/sh
+        - -c
+      args:
+        # `cp` et non `mv` comme dans la doc amont : la racine du conteneur est
+        # montée en lecture seule, un `mv` échouerait sur l'unlink de la source.
+        - |
+          set -eu
+          cp "$(command -v ksops)" /custom-tools/ksops
+          cp "$(command -v kustomize)" /custom-tools/kustomize
+          chmod +x /custom-tools/ksops /custom-tools/kustomize
+      volumeMounts:
+        - name: custom-tools
+          mountPath: /custom-tools
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+
+  volumes:
+    - name: custom-tools
+      emptyDir: {}
+    # Créé manuellement à l'amorçage : c'est la seule chose qu'ArgoCD ne peut
+    # pas déchiffrer lui-même, puisqu'elle est la clé du déchiffrement.
+    - name: sops-age
+      secret:
+        secretName: sops-age
+        optional: false
+        items:
+          - key: keys.txt
+            path: keys.txt
+
+  volumeMounts:
+    # Le kustomize fourni par KSOPS remplace celui de l'image ArgoCD : les deux
+    # doivent partager la même version d'API de plugin.
+    - name: custom-tools
+      mountPath: /usr/local/bin/kustomize
+      subPath: kustomize
+    - name: custom-tools
+      mountPath: /usr/local/bin/ksops
+      subPath: ksops
+    - name: sops-age
+      mountPath: /.config/sops/age
+      readOnly: true
+
+  metrics:
+    enabled: true
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8084"
+    prometheus.io/path: "/metrics"
+
+  containerSecurityContext:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+# ---------------------------------------------------------------------------
+# API server / UI
+# ---------------------------------------------------------------------------
+server:
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 96Mi
+
+  env:
+    - name: GOMEMLIMIT
+      value: "85MiB"
+
+  # TLS terminé par Traefik en amont (cf. platform/argocd/ingressroute.yaml) :
+  # inutile de payer une seconde terminaison dans le pod.
+  service:
+    type: ClusterIP
+
+  # L'Ingress n'est pas géré par le chart mais par un IngressRoute Traefik, pour
+  # garder tous les points d'entrée HTTP décrits avec la même ressource.
+  ingress:
+    enabled: false
+
+  metrics:
+    enabled: true
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8083"
+    prometheus.io/path: "/metrics"
+
+  containerSecurityContext:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+  autoscaling:
+    enabled: false
+
+# ---------------------------------------------------------------------------
+# Redis (cache de manifests d'ArgoCD, distinct du Redis applicatif)
+# Instance unique : le mode HA du chart déploierait 3 pods + 3 sentinelles.
+# ---------------------------------------------------------------------------
+redis:
+  enabled: true
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 96Mi
+
+  containerSecurityContext:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+redis-ha:
+  enabled: false
+
+# Job éphémère qui génère le mot de passe Redis au premier démarrage.
+redisSecretInit:
+  enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 32Mi
+
+# ---------------------------------------------------------------------------
+# Configuration d'ArgoCD lui-même
+# ---------------------------------------------------------------------------
+configs:
+  params:
+    # TLS terminé en amont par Traefik.
+    server.insecure: true
+    # Cf. commentaire du controller : on réduit la concurrence, pas les replicas.
+    controller.status.processors: "4"
+    controller.operation.processors: "2"
+    controller.repo.server.timeout.seconds: "300"
+    # Un seul rendu de manifests à la fois : évite les pics mémoire simultanés
+    # du repo-server quand plusieurs Applications se réveillent ensemble.
+    reposerver.parallelism.limit: "1"
+
+  cm:
+    # Indispensable à KSOPS : le plugin est un exécutable externe appelé par
+    # kustomize, ce que kustomize refuse sans ces deux drapeaux.
+    kustomize.buildOptions: "--enable-alpha-plugins --enable-exec"
+
+    # 3 min au lieu de 3 min par défaut côté chart, mais explicite : c'est le
+    # rythme auquel le repo-server recharge le dépôt sur un nœud partagé.
+    timeout.reconciliation: 180s
+
+    # Suivi par annotation et non par label : le label `instance` est limité à
+    # 63 caractères et entre en collision avec les labels standards Kubernetes.
+    application.resourceTrackingMethod: annotation
+
+    # Le cache du controller est le premier poste mémoire d'ArgoCD. On exclut
+    # les ressources à forte rotation qu'on ne déploie jamais depuis Git.
+    resource.exclusions: |
+      - apiGroups:
+          - ""
+        kinds:
+          - Endpoints
+          - Event
+        clusters:
+          - "*"
+      - apiGroups:
+          - discovery.k8s.io
+        kinds:
+          - EndpointSlice
+        clusters:
+          - "*"
+      - apiGroups:
+          - events.k8s.io
+        kinds:
+          - Event
+        clusters:
+          - "*"
+      - apiGroups:
+          - coordination.k8s.io
+        kinds:
+          - Lease
+        clusters:
+          - "*"
+      - apiGroups:
+          - metrics.k8s.io
+        kinds:
+          - "*"
+        clusters:
+          - "*"
+
+    # CloudNativePG et cert-manager réécrivent en permanence ces champs de
+    # statut ; sans cela toutes les Applications restent OutOfSync en continu.
+    resource.customizations.ignoreDifferences.apiextensions.k8s.io_CustomResourceDefinition: |
+      jqPathExpressions:
+        - '.spec.versions[]?.schema.openAPIV3Schema.properties.spec.properties | select(. == null)'
+      jsonPointers:
+        - /spec/conversion/webhook/clientConfig/caBundle
+
+  rbac:
+    # Lecture seule par défaut : un compte supplémentaire créé à la va-vite
+    # n'obtient rien tant qu'on ne lui donne pas explicitement un rôle.
+    policy.default: role:readonly
+    policy.csv: |
+      g, admin, role:admin
+    scopes: "[groups]"
+
+  # Dépôt privé uniquement : décommenter et créer le secret correspondant à la
+  # main pendant l'amorçage (ArgoCD doit pouvoir cloner AVANT de savoir
+  # déchiffrer quoi que ce soit — cf. README, étapes manuelles résiduelles).
+  # credentialTemplates:
+  #   github:
+  #     url: https://github.com/OpenJbessa
+  #     password: <TOKEN>
+  #     username: git
