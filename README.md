@@ -110,7 +110,10 @@ façon personne pour le déclencher : l'amorçage est manuel par nature.
 sudo apt install -y age
 curl -fsSLO https://github.com/getsops/sops/releases/download/v3.9.4/sops_3.9.4_amd64.deb
 sudo dpkg -i sops_3.9.4_amd64.deb && rm sops_3.9.4_amd64.deb
-# helm et kubectl : dépôts officiels (voir la documentation amont)
+# helm : dépôt officiel baltocdn
+# kubectl : ALIGNER LA MINEURE SUR CELLE DU SERVEUR (k3s --version sur le VPS).
+#   Le client tolère un écart d'une mineure ; au-delà, certains verbes échouent
+#   de façon peu explicite. Le cluster tourne actuellement en v1.36.
 ```
 
 ### Accès au cluster
