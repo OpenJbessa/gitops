@@ -284,8 +284,44 @@ règle qui réserve quelques surprises (voir Teleport).
 | **Total au repos** | **3 916 Mo** | **4 600** | marge 684 |
 | **Total au pic** (worker à 4) | **4 300 Mo** | **4 600** | marge 300 |
 
-Restent environ 3,7 Go pour le système, le kubelet, containerd et les
-composants K3s (coredns, metrics-server, local-path-provisioner).
+### Rapporté à l'allocatable réel
+
+Le plafond de 4 600 Mio est un garde-fou que la CI fait respecter. La vraie
+contrainte est l'allocatable calculé par le kubelet à partir des réservations
+posées dans `/etc/rancher/k3s/config.yaml` :
+
+```
+capacité du nœud        7 939 Mi
+− system-reserved          600 Mi
+− kube-reserved            300 Mi
+− seuil d'éviction         250 Mi   (eviction-hard: memory.available<250Mi)
+= allocatable            6 789 Mi
+```
+
+| | Mio | Part de l'allocatable |
+|---|---:|---:|
+| Requests au repos | 3 916 | 57 % |
+| Requests au pic worker | 4 300 | 63 % |
+| **Limites cumulées au pic** | **6 500** | **95 %** |
+
+Les 63 % de requests sont confortables : l'ordonnanceur garde 2 489 Mio de
+marge, de quoi absorber un pod de debug ou un Job de migration sans rien
+déloger.
+
+Les 95 % de limites, en revanche, disent le surengagement : **si toutes les
+charges atteignaient leur plafond en même temps, le nœud serait à la limite de
+l'éviction.** C'est le fonctionnement normal d'un nœud unique — on parie que les
+pics ne coïncident pas — mais ça a deux conséquences pratiques :
+
+- l'alerte `NoeudMemoireSaturee` (7 Go) est le signal qui précède l'éviction, pas
+  une courtoisie ;
+- tous les pods sont en QoS *Burstable*, donc l'éviction frappe d'abord celui
+  qui dépasse le plus sa request. Si PostgreSQL devait être protégé
+  explicitement, le levier serait une `priorityClassName` dédiée — non posée
+  aujourd'hui, à envisager si des évictions surviennent.
+
+Le levier de correction est alors les **limites**, pas les requests : baisser une
+request libère de l'ordonnancement, baisser une limite réduit le surengagement.
 
 ### Les deux écarts, et pourquoi
 
