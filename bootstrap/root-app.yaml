@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# Application racine (app-of-apps).
+#
+# C'est le SEUL `kubectl apply` manuel de tout le projet, et il est idempotent :
+# le réappliquer après modification de ce fichier est la procédure normale.
+#
+# Elle ne déploie aucune charge : elle ne fait que matérialiser les Applications
+# décrites sous apps/. Chacune porte son annotation de sync-wave, et ArgoCD
+# attend qu'une wave soit Healthy avant d'entamer la suivante — c'est ce qui
+# ordonne tout le cluster à partir d'un seul apply.
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: root
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+  # Supprimer la root-app supprime tout le cluster applicatif. Le finalizer rend
+  # ce geste explicite plutôt qu'accidentel.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/OpenJbessa/gitops.git
+    targetRevision: main
+    path: apps
+    directory:
+      recurse: true
+      # Seuls les manifests sont lus : un README posé dans apps/ ne casse rien.
+      include: "{**/*.yaml}"
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # Le namespace argocd existe déjà : il a été créé par le helm install.
+      - CreateNamespace=false
+      # Ne réapplique que ce qui a dérivé. Sur un nœud unique, réappliquer la
+      # totalité des Applications à chaque réconciliation coûte inutilement cher.
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+
+  # Historique court : chaque révision conservée est un jeu de manifests gardé
+  # en mémoire par le controller.
+  revisionHistoryLimit: 3
