@@ -1,14 +1,17 @@
 # ---------------------------------------------------------------------------
 # ArgoCD — profil « nœud K3s unique, 8 Go »
 #
-# Budget alloué : 450 Mo de requests / 650 Mo de limites, à répartir entre les
-# quatre composants conservés :
-#   application-controller  192 Mo / 256 Mo
+# Budget initialement alloué : 450 Mo de requests. Dépassé de 62 Mo après le
+# premier amorçage, sur le seul application-controller — voir le commentaire de
+# ses ressources plus bas.
+#   application-controller  256 Mo / 512 Mo
 #   repo-server             128 Mo / 192 Mo
 #   server (API + UI)        64 Mo /  96 Mo
 #   redis                    64 Mo /  96 Mo
 #   ------------------------------------------
-#   total                   448 Mo / 640 Mo
+#   total                   512 Mo / 896 Mo
+#
+# La plateforme reste à 3 980 Mo de requests au repos, sur les 4 600 du plafond.
 #
 # Ce fichier est la source de vérité UNIQUE de la configuration d'ArgoCD.
 # Il est consommé deux fois, et c'est voulu :
@@ -79,17 +82,28 @@ notifications:
 controller:
   replicas: 1
 
+  # L'écart entre request et limite est volontairement large, et c'est une
+  # correction tirée du premier amorçage : le controller a été tué par l'OOM
+  # neuf secondes après son démarrage, pendant la synchronisation initiale de
+  # son cache. À cet instant il liste d'un coup toutes les ressources du
+  # cluster, CRD comprises — cert-manager, Kyverno, Traefik, CloudNativePG,
+  # KEDA, VictoriaMetrics. Le pic de démarrage dépasse largement la
+  # consommation de régime.
+  #
+  # La request reflète donc le régime permanent, qui est ce que l'ordonnanceur
+  # doit réserver ; la limite couvre le pic de synchronisation.
   resources:
     requests:
       cpu: 100m
-      memory: 192Mi
-    limits:
       memory: 256Mi
+    limits:
+      memory: 512Mi
 
   env:
-    # Le GC Go se déclenche à 90 % de la limite au lieu d'attendre l'OOMKill.
+    # 90 % de la limite : le GC Go se déclenche avant l'OOMKill au lieu de le
+    # subir. C'est ce qui rend le pic de démarrage survivable plutôt que fatal.
     - name: GOMEMLIMIT
-      value: "230MiB"
+      value: "460MiB"
 
   # Défauts amont : 20 et 10. Sur ~20 Applications qui se synchronisent par
   # vagues, 4 et 2 suffisent et divisent le nombre de goroutines concurrentes.

@@ -267,7 +267,7 @@ règle qui réserve quelques surprises (voir Teleport).
 
 | Composant | Réservé | Budget cible | |
 |---|---:|---:|---|
-| ArgoCD (controller, repo-server, server, redis) | 448 Mo | 450 | |
+| ArgoCD (controller, repo-server, server, redis) | **512 Mo** | 450 | **+62** |
 | Traefik | 80 Mo | 80 | |
 | cert-manager (controller, webhook, cainjector) | 120 Mo | 120 | |
 | Teleport (auth + proxy) | **356 Mo** | 200 | **+156** |
@@ -329,7 +329,15 @@ pics ne coïncident pas — mais ça a deux conséquences pratiques :
 Le levier de correction est alors les **limites**, pas les requests : baisser une
 request libère de l'ordonnancement, baisser une limite réduit le surengagement.
 
-### Les deux écarts, et pourquoi
+### Les trois écarts, et pourquoi
+
+**ArgoCD, +62 Mo.** L'application-controller a été tué par l'OOM killer neuf
+secondes après son démarrage lors du premier amorçage, avec une limite à
+256 Mo. La cause n'est pas sa consommation de régime — mesurée bien plus bas —
+mais la synchronisation initiale de son cache : il liste d'un coup toutes les
+ressources du cluster, CRD comprises. Le correctif ouvre surtout la **limite**
+(512 Mo) plutôt que la request (256 Mo) : l'ordonnanceur réserve le régime
+permanent, la limite absorbe le pic de démarrage.
 
 **Teleport, +156 Mo.** Le chart `teleport-cluster` insère dans le pod proxy un
 initContainer `wait-auth-update` dont les ressources sont codées en dur à
