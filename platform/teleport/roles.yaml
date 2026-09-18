@@ -23,11 +23,15 @@ metadata:
   description: Accès complet SSH et Kubernetes à la plateforme
 spec:
   allow:
-    # Comptes UNIX ouverts sur le nœud. `debian` est le compte non privilégié
-    # du VPS Hostinger ; `root` reste accessible parce qu'un nœud unique sans
-    # accès root est un nœud qu'on ne peut pas réparer.
+    # Comptes UNIX ouverts sur le nœud. `ops` est le compte non privilégié créé
+    # par le provisionnement OpenTofu ; `root` reste accessible parce qu'un nœud
+    # unique sans accès root est un nœud qu'on ne peut pas réparer.
+    #
+    # Ces noms doivent exister sur l'hôte : un login absent fait échouer
+    # `tsh ssh` sans message explicite côté Teleport. Vérifier avec
+    #   getent passwd | awk -F: '$3>=1000 && $3<65534 {print $1}'
     logins:
-      - debian
+      - ops
       - root
     # Un seul nœud : le joker ne masque rien.
     node_labels:

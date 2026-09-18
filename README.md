@@ -493,7 +493,7 @@ Vérifier que le nœud apparaît **avant** de fermer le port 22 :
 ```bash
 tsh login --proxy=teleport.jbessa.tech:443
 tsh ls          # le nœud doit être listé
-tsh ssh debian@<nœud>   # et la connexion doit aboutir
+tsh ssh ops@<nœud>      # et la connexion doit aboutir
 ```
 
 La fermeture du port 22 elle-même se fait dans le dépôt OpenTofu.
