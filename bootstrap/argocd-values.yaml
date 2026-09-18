@@ -1,17 +1,19 @@
 # ---------------------------------------------------------------------------
 # ArgoCD — profil « nœud K3s unique, 8 Go »
 #
-# Budget initialement alloué : 450 Mo de requests. Dépassé de 62 Mo après le
-# premier amorçage, sur le seul application-controller — voir le commentaire de
-# ses ressources plus bas.
-#   application-controller  320 Mo / 768 Mo
-#   repo-server             128 Mo / 192 Mo
+# Budget initialement alloué : 450 Mo de requests. Dépassé de 254 Mo après le
+# premier amorçage : les deux composants qui rendent et réconcilient ont été
+# tués par l'OOM killer, et leurs valeurs découlent maintenant de mesures
+# plutôt que d'estimations. Détail dans leurs commentaires respectifs.
+#   application-controller  384 Mo / 768 Mo
+#   repo-server             192 Mo / 384 Mo
 #   server (API + UI)        64 Mo /  96 Mo
 #   redis                    64 Mo /  96 Mo
 #   ------------------------------------------
-#   total                   576 Mo / 1152 Mo
+#   total                   704 Mo / 1344 Mo
 #
-# La plateforme reste à 4 044 Mo de requests au repos, sur les 4 600 du plafond.
+# La plateforme reste à 4 172 Mo de requests au repos et 4 556 Mo au pic,
+# sur les 4 600 du plafond.
 #
 # Ce fichier est la source de vérité UNIQUE de la configuration d'ArgoCD.
 # Il est consommé deux fois, et c'est voulu :
@@ -87,27 +89,24 @@ controller:
   # neuf secondes après son démarrage, pendant la synchronisation initiale de
   # son cache. À cet instant il liste d'un coup toutes les ressources du
   # cluster, CRD comprises — cert-manager, Kyverno, Traefik, CloudNativePG,
-  # KEDA, VictoriaMetrics. Le pic de démarrage dépasse largement la
-  # consommation de régime.
+  # KEDA, VictoriaMetrics.
   #
-  # La request reflète donc le régime permanent, qui est ce que l'ordonnanceur
-  # doit réserver ; la limite couvre le pic de synchronisation.
   # MESURES RELEVÉES au premier amorçage, avec 21 Applications :
-  #   régime permanent        212 Mo   (kubectl top pod -n argocd)
   #   pic de démarrage       > 512 Mo   (OOMKill à 512, stable à 768)
+  #   après réconciliation     212 Mo
+  #   sous charge de travail   429 Mo   (rafraîchissement forcé des 21 apps)
   #
-  # Un facteur trois et demi entre les deux. La limite est donc dictée par le
-  # pic, pas par le régime — d'où l'écart inhabituel avec la request.
-  # Ne pas descendre la limite sous 768 Mo sans revérifier le démarrage : c'est
-  # le seul moment où ce chiffre compte.
+  # La request est posée entre les deux derniers chiffres : 212 Mo décrit un
+  # cluster au repos, 429 Mo un cluster qui recompare tout d'un coup. 384 Mo
+  # couvre l'usage courant sans réserver le pire cas.
   #
-  # La request pourrait être resserrée vers 256 Mo, mais seulement après
-  # plusieurs jours de fonctionnement — la mesure ci-dessus a été prise sur un
-  # cluster dont les waves 6 et 7 venaient d'être déployées.
+  # Ne pas descendre la limite sous 768 Mo sans revérifier le DÉMARRAGE : c'est
+  # le seul moment où ce chiffre compte, et il est trois fois supérieur au
+  # régime permanent.
   resources:
     requests:
       cpu: 100m
-      memory: 320Mi
+      memory: 384Mi
     limits:
       memory: 768Mi
 
@@ -149,16 +148,24 @@ controller:
 repoServer:
   replicas: 1
 
+  # Tué par l'OOM killer à 192 Mo lors du premier amorçage, six fois. Le régime
+  # permanent est pourtant bas — 79 Mo mesurés — mais le rendu d'un chart est un
+  # pic : le repo-server lance helm et kustomize en sous-processus, et les CRD
+  # de Kyverno ou de CloudNativePG pèsent plusieurs mégaoctets de JSON chacune.
+  # Avec 21 Applications à recomparer, ces pics s'enchaînent.
+  #
+  # `reposerver.parallelism.limit: 1` (cf. configs.params) sérialise déjà ces
+  # rendus : sans lui, il en faudrait bien davantage.
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
-    limits:
       memory: 192Mi
+    limits:
+      memory: 384Mi
 
   env:
     - name: GOMEMLIMIT
-      value: "170MiB"
+      value: "345MiB"
     # SOPS cherche sa configuration sous $XDG_CONFIG_HOME ; la clé age privée
     # est montée plus bas depuis le secret `sops-age`.
     - name: XDG_CONFIG_HOME

@@ -267,7 +267,7 @@ règle qui réserve quelques surprises (voir Teleport).
 
 | Composant | Réservé | Budget cible | |
 |---|---:|---:|---|
-| ArgoCD (controller, repo-server, server, redis) | **576 Mo** | 450 | **+126** |
+| ArgoCD (controller, repo-server, server, redis) | **704 Mo** | 450 | **+254** |
 | Traefik | 80 Mo | 80 | |
 | cert-manager (controller, webhook, cainjector) | 120 Mo | 120 | |
 | Teleport (auth + proxy) | **356 Mo** | 200 | **+156** |
@@ -287,8 +287,8 @@ règle qui réserve quelques surprises (voir Teleport).
 | API Laravel | 320 Mo | 320 | |
 | Front Nuxt | 256 Mo | 256 | |
 | Worker (1 réplica) | 128 Mo | 128 | |
-| **Total au repos** | **4 044 Mo** | **4 600** | marge 556 |
-| **Total au pic** (worker à 4) | **4 428 Mo** | **4 600** | marge 172 |
+| **Total au repos** | **4 172 Mo** | **4 600** | marge 428 |
+| **Total au pic** (worker à 4) | **4 556 Mo** | **4 600** | marge 44 |
 
 ### Rapporté à l'allocatable réel
 
