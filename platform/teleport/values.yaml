@@ -143,3 +143,25 @@ annotations:
 
 podMonitor:
   enabled: false
+
+# Rend platform/teleport/roles.yaml lisible depuis le conteneur auth, pour
+# pouvoir l'appliquer avec :
+#   kubectl exec -n teleport deploy/teleport-auth -- \
+#     tctl create -f /etc/teleport-roles/roles.yaml
+#
+# L'image étant distroless — ni shell, ni tar — c'est la seule façon d'y faire
+# entrer un fichier. La ConfigMap est produite par le kustomization.yaml voisin.
+#
+# La solution pleinement GitOps serait l'opérateur Teleport (`operator.enabled`),
+# qui transformerait les rôles en CRD réconciliées par ArgoCD. Il coûte environ
+# 64 Mo — à reconsidérer maintenant que la consommation réelle mesurée du cluster
+# (1 623 Mo) est très en dessous des 4 172 Mo réservés.
+extraVolumes:
+  - name: roles
+    configMap:
+      name: teleport-roles
+
+extraVolumeMounts:
+  - name: roles
+    mountPath: /etc/teleport-roles
+    readOnly: true
