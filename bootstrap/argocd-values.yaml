@@ -412,6 +412,15 @@ configs:
         - '.spec.versions[]?.schema.openAPIV3Schema.properties.spec.properties | select(. == null)'
       jsonPointers:
         - /spec/conversion/webhook/clientConfig/caBundle
+        # Plusieurs charts rendent `metadata.labels: {}` sur leurs CRD — Kyverno
+        # sur ses onze. Le serveur d'API supprime les maps vides à l'écriture :
+        # l'état désiré porte alors un champ que l'état réel n'aura jamais, et
+        # l'Application reste OutOfSync sans qu'aucune correction soit possible.
+        #
+        # Le normaliseur est posé ICI et non dans un ignoreDifferences par
+        # Application : avec ServerSideApply, celui-ci intervient trop tard dans
+        # la comparaison. Le normaliseur global, lui, s'applique avant le diff.
+        - /metadata/labels
 
   rbac:
     # Lecture seule par défaut : un compte supplémentaire créé à la va-vite
