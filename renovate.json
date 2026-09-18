@@ -1,0 +1,88 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "timezone": "Europe/Paris",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 2,
+
+  "argocd": {
+    "description": "Versions de charts portées par les Application ArgoCD (spec.sources[].chart).",
+    "managerFilePatterns": ["/^apps/.+\\.ya?ml$/"]
+  },
+
+  "kubernetes": {
+    "description": "Images référencées dans les manifests bruts.",
+    "managerFilePatterns": [
+      "/^data/.+\\.ya?ml$/",
+      "/^platform/.+\\.ya?ml$/",
+      "/^workloads/.+\\.ya?ml$/"
+    ]
+  },
+
+  "customManagers": [
+    {
+      "description": "Images posées dans des fichiers de valeurs Helm, que le manager kubernetes ne lit pas (initContainer KSOPS, CronJob de purge Teleport).",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^bootstrap/.+\\.ya?ml$/",
+        "/^platform/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+.*?image:\\s*\\S+:(?<currentValue>[^\\s\"']+)"
+      ],
+      "versioningTemplate": "semver"
+    }
+  ],
+
+  "packageRules": [
+    {
+      "description": "Les majeures de charts d'infrastructure ne se mergent jamais sans relecture : le schéma de valeurs change. Traefik 34 -> 41 a déplacé cinq clés, cert-manager a perdu son préfixe v, argo-cd 10 a supprimé applicationSet.enabled.",
+      "matchDatasources": ["helm"],
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["relecture-schema-requise"],
+      "automerge": false,
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Correctifs des briques de plateforme : regroupés en une seule pull request hebdomadaire pour limiter le bruit sur un dépôt à un seul relecteur.",
+      "matchDatasources": ["helm"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "correctifs charts plateforme"
+    },
+    {
+      "description": "PostgreSQL suit la version de l'opérateur CloudNativePG (imageName non renseigné dans le Cluster) : une montée de l'opérateur peut donc changer la version majeure de la base.",
+      "matchPackageNames": ["cloudnative-pg"],
+      "addLabels": ["impact-base-de-donnees"],
+      "minimumReleaseAge": "14 days"
+    },
+    {
+      "description": "Teleport : les clients tsh doivent rester dans une majeure de l'instance. Une montée majeure impose de mettre à jour l'agent de l'hôte, installé hors GitOps.",
+      "matchPackageNames": ["teleport-cluster"],
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["action-manuelle-agent-hote"],
+      "automerge": false
+    },
+    {
+      "description": "Le chart Grafana est marqué deprecated en amont tout en publiant la dernière version de Grafana. Surveiller l'arrêt des publications.",
+      "matchPackageNames": ["grafana"],
+      "matchDatasources": ["helm"],
+      "addLabels": ["chart-deprecie"]
+    },
+    {
+      "description": "Images maison : jamais touchées par Renovate. Leur tag est un SHA de commit, sans ordre comparable, et c'est la CI applicative qui le fait avancer par pull request.",
+      "matchPackageNames": ["/^ghcr\\.io/openjbessa//"],
+      "enabled": false
+    }
+  ],
+
+  "vulnerabilityAlerts": {
+    "labels": ["securite"],
+    "schedule": ["at any time"],
+    "minimumReleaseAge": null
+  }
+}
