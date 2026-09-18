@@ -127,9 +127,15 @@ ssh -N -L 6443:127.0.0.1:6443 <utilisateur>@<ip-vps>
 
 # terminal 2
 mkdir -p ~/.kube
-scp <utilisateur>@<ip-vps>:/etc/rancher/k3s/k3s.yaml ~/.kube/config-jbessa
+# `sudo cat` et non `scp` : la configuration K3s pose write-kubeconfig-mode 0600,
+# donc le fichier n'est lisible que par root et scp échoue sur un « Permission denied ».
+ssh <utilisateur>@<ip-vps> "sudo cat /etc/rancher/k3s/k3s.yaml" > ~/.kube/config-jbessa
 chmod 600 ~/.kube/config-jbessa
 export KUBECONFIG=~/.kube/config-jbessa
+
+# Vérifier AVANT de poursuivre : sans kubeconfig valide, kubectl retombe
+# silencieusement sur http://localhost:8080 et toutes les commandes suivantes
+# échouent en cascade.
 kubectl get nodes
 ```
 
