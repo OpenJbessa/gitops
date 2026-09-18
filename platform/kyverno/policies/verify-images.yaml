@@ -1,0 +1,73 @@
+# ---------------------------------------------------------------------------
+# Signature Cosign obligatoire sur les images maison.
+#
+# Le modèle est keyless : la CI GitHub Actions signe avec un certificat
+# éphémère délivré par Fulcio, dont l'identité porte l'URL du dépôt et
+# l'émetteur OIDC de GitHub. Aucune clé privée n'est donc à stocker, ni à faire
+# tourner, ni à révoquer — ce qui est précisément l'intérêt.
+#
+# Le joker sur l'organisation (`https://github.com/OpenJbessa/*`) plutôt qu'une
+# liste de dépôts : ajouter un service ne doit pas demander de toucher à la
+# policy d'admission. La frontière de confiance est l'organisation GitHub.
+#
+# Attention à la casse : l'identité vérifiée est l'URL GitHub, qui conserve les
+# majuscules d'origine, alors que la référence d'image GHCR est en minuscules.
+#
+# `mutateDigest: true` réécrit le tag en digest une fois la signature validée.
+# C'est ce qui empêche qu'une image soit remplacée derrière un tag déjà admis.
+# ---------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+  annotations:
+    # Appliqué après le Deployment du chart, dans la même Application.
+    argocd.argoproj.io/sync-wave: "1"
+    policies.kyverno.io/title: Signature Cosign obligatoire
+    policies.kyverno.io/category: Supply Chain
+    policies.kyverno.io/severity: critical
+  labels:
+    app.kubernetes.io/name: verify-image-signatures
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+spec:
+  validationFailureAction: Enforce
+  # Fail et non Ignore : si Kyverno est indisponible, on refuse plutôt que
+  # d'admettre une image non vérifiée. Le namespace kyverno est exclu des
+  # webhooks (cf. values.yaml), donc Kyverno peut toujours se redémarrer.
+  failurePolicy: Fail
+  # La vérification de signature exige un appel réseau au registre et à Rekor :
+  # impossible en mode background, et inutile puisque le contrôleur de
+  # background est désactivé.
+  background: false
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-ghcr-openjbessa
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        # Seules les images maison sont concernées. Les images amont (Traefik,
+        # PostgreSQL, Grafana…) ne matchent pas ce motif et passent sans
+        # vérification : exiger leur signature demanderait de maintenir une
+        # identité de confiance par éditeur, pour un gain discutable.
+        - imageReferences:
+            - "ghcr.io/openjbessa/*"
+          # Une image qui matche et dont la signature est absente ou invalide
+          # est refusée. Sans `required`, une absence de signature passerait.
+          required: true
+          mutateDigest: true
+          verifyDigest: true
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    subject: "https://github.com/OpenJbessa/*"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          # Si le dépôt GHCR devient privé, Kyverno devra s'authentifier pour
+          # lire la signature. Décommenter et créer le secret correspondant :
+          # imagePullSecrets: ghcr-pull-secret

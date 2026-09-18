@@ -1,0 +1,120 @@
+# ---------------------------------------------------------------------------
+# Durcissement des pods.
+#
+# Deux des trois règles recoupent volontairement le profil PSA « restricted »
+# déjà posé sur les namespaces : c'est de la défense en profondeur, et surtout
+# un filet si un namespace était un jour créé sans ses labels.
+#
+# La troisième — readOnlyRootFilesystem — est la seule qui apporte quelque
+# chose que PSA ne sait pas exprimer. Elle est restreinte au namespace `apps`,
+# parce qu'elle ne s'applique qu'aux images dont on maîtrise le comportement :
+# beaucoup de charts amont écrivent dans leur système de fichiers racine, et
+# l'imposer globalement reviendrait à ne plus pouvoir déployer de brique tierce.
+# ---------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-hardened-pods
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    policies.kyverno.io/title: Durcissement des pods
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+  labels:
+    app.kubernetes.io/name: require-hardened-pods
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+spec:
+  validationFailureAction: Enforce
+  failurePolicy: Fail
+  background: false
+  rules:
+    # -----------------------------------------------------------------------
+    - name: require-run-as-non-root
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - traefik
+      validate:
+        message: >-
+          Les conteneurs doivent tourner sans privilèges root. Renseigner
+          runAsNonRoot: true au niveau du pod ou de chaque conteneur.
+        # Deux formes acceptées : le réglage au niveau du pod (hérité par tous
+        # les conteneurs) ou au niveau de chaque conteneur. Les charts amont
+        # utilisent indifféremment l'une ou l'autre.
+        anyPattern:
+          - spec:
+              securityContext:
+                runAsNonRoot: true
+              =(initContainers):
+                - =(securityContext):
+                    =(runAsNonRoot): true
+              containers:
+                - =(securityContext):
+                    =(runAsNonRoot): true
+          - spec:
+              =(initContainers):
+                - securityContext:
+                    runAsNonRoot: true
+              containers:
+                - securityContext:
+                    runAsNonRoot: true
+
+    # -----------------------------------------------------------------------
+    - name: disallow-privilege-escalation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - traefik
+      validate:
+        message: >-
+          allowPrivilegeEscalation doit être explicitement à false sur chaque
+          conteneur, y compris les initContainers.
+        pattern:
+          spec:
+            =(initContainers):
+              - securityContext:
+                  allowPrivilegeEscalation: false
+            =(ephemeralContainers):
+              - securityContext:
+                  allowPrivilegeEscalation: false
+            containers:
+              - securityContext:
+                  allowPrivilegeEscalation: false
+
+    # -----------------------------------------------------------------------
+    # Portée réduite aux charges maison : voir l'en-tête du fichier.
+    - name: require-read-only-root-filesystem
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - apps
+      validate:
+        message: >-
+          Le système de fichiers racine doit être en lecture seule. Monter un
+          emptyDir sur les seuls chemins qui ont besoin d'écrire.
+        pattern:
+          spec:
+            =(initContainers):
+              - securityContext:
+                  readOnlyRootFilesystem: true
+            containers:
+              - securityContext:
+                  readOnlyRootFilesystem: true

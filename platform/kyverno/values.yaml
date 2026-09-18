@@ -1,0 +1,139 @@
+# ---------------------------------------------------------------------------
+# Kyverno — contrôleur d'admission uniquement.
+# Budget : 200 Mo de request, 300 Mo de limite.
+#
+# Kyverno se déploie normalement en quatre contrôleurs. Trois sont désactivés :
+# ils ne servent qu'à des fonctions différées (rapports, nettoyage, génération)
+# dont aucune n'est utilisée ici, et ils coûteraient à eux seuls plus que le
+# budget total alloué. Ce qui reste est le chemin synchrone : un pod non
+# conforme est refusé à l'admission, point.
+# ---------------------------------------------------------------------------
+
+admissionController:
+  replicas: 1
+
+  container:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 176Mi
+      limits:
+        memory: 264Mi
+    securityContext:
+      runAsNonRoot: true
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+
+  initContainer:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 24Mi
+      limits:
+        memory: 36Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Le contexte de sécurité du conteneur se règle sous `container`, pas au
+  # niveau du contrôleur : placé un cran trop haut, il est ignoré sans erreur.
+  serviceMonitor:
+    enabled: false
+
+  # Un seul nœud, un seul réplica : un PDB n'aurait rien à protéger et
+  # bloquerait les drains.
+  podDisruptionBudget:
+    enabled: false
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+
+# ---------------------------------------------------------------------------
+# Contrôleurs désactivés
+# ---------------------------------------------------------------------------
+
+# Réévaluerait les policies sur les ressources déjà présentes et produirait des
+# PolicyReport. Sur un cluster dont l'état vient entièrement de Git, la seule
+# porte d'entrée qui compte est l'admission.
+backgroundController:
+  enabled: false
+
+# Ne sert qu'aux CleanupPolicy (suppression programmée de ressources), non
+# utilisées ici.
+cleanupController:
+  enabled: false
+
+# Agrège les PolicyReport, qui ne sont plus produits.
+reportsController:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Fonctionnalités
+# ---------------------------------------------------------------------------
+features:
+  # Sans contrôleur de rapports, laisser le contrôleur d'admission générer des
+  # rapports reviendrait à écrire dans etcd des objets que personne ne relit.
+  reporting:
+    validate: false
+    mutate: false
+    mutateExisting: false
+    imageVerify: false
+    generate: false
+  admissionReports:
+    enabled: false
+  aggregateReports:
+    enabled: false
+  policyReports:
+    enabled: false
+  # Une PolicyException permet de contourner une policy depuis un manifeste.
+  # Sur un cluster mono-opérateur, c'est une porte dérobée sans contrepartie :
+  # les exceptions légitimes sont écrites dans les policies elles-mêmes.
+  policyExceptions:
+    enabled: false
+
+# ---------------------------------------------------------------------------
+# Portée des webhooks
+# ---------------------------------------------------------------------------
+config:
+  # Kyverno ne s'applique pas à lui-même : sinon un redémarrage du contrôleur
+  # pendant lequel le webhook ne répond pas empêche Kyverno de redémarrer.
+  excludeKyvernoNamespace: true
+
+  webhooks:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            # Composants système de K3s (coredns, metrics-server,
+            # local-path-provisioner) : non gérés par ce dépôt, et les bloquer
+            # casserait le cluster sans qu'on puisse le réparer.
+            - kube-system
+            # Le ServiceLB de K3s y déploie les pods svclb-* avec NET_ADMIN et
+            # des hostPort. Même raison que l'exception PSA de ce namespace :
+            # les refuser supprimerait l'entrée HTTP du cluster.
+            - traefik
+
+  # Seconde barrière, au cas où un pod svclb serait créé ailleurs : les filtres
+  # de ressources s'appliquent avant même l'évaluation des policies.
+  resourceFilters:
+    - "[Event,*,*]"
+    - "[Node,*,*]"
+    - "[APIService,*,*]"
+    - "[TokenReview,*,*]"
+    - "[SubjectAccessReview,*,*]"
+    - "[SelfSubjectAccessReview,*,*]"
+    - "[Binding,*,*]"
+    - "[ReplicaSet,*,*]"
+    - "[EphemeralReport,*,*]"
+    - "[ClusterEphemeralReport,*,*]"
+    - "[Pod,*,svclb-*]"
