@@ -1,0 +1,76 @@
+# ---------------------------------------------------------------------------
+# Certificats du cluster.
+#
+# Deux seulement, parce qu'ils vivent dans des namespaces différents et qu'un
+# Secret TLS n'est pas partageable entre namespaces :
+#   - `traefik`  : certificat par défaut de tous les routeurs HTTP ;
+#   - `teleport` : monté directement dans le pod proxy, qui termine son TLS.
+#
+# Le wildcard `*.jbessa.tech` ne couvre PAS l'apex ni les sous-domaines de
+# second niveau — d'où la présence explicite de `jbessa.tech` dans la liste.
+# ---------------------------------------------------------------------------
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-jbessa-tech
+  namespace: traefik
+  labels:
+    app.kubernetes.io/name: wildcard-jbessa-tech
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+spec:
+  secretName: wildcard-jbessa-tech-tls
+  secretTemplate:
+    labels:
+      app.kubernetes.io/part-of: platform
+      app.kubernetes.io/managed-by: argocd
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: jbessa.tech
+  dnsNames:
+    - jbessa.tech
+    - "*.jbessa.tech"
+  # 90 jours d'émission, renouvellement à 30 jours restants : laisse trois
+  # fenêtres de rattrapage si l'API Cloudflare est indisponible un jour donné.
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    # Une nouvelle clé à chaque renouvellement : si la précédente a fuité, la
+    # fenêtre d'exposition est bornée par la durée du certificat.
+    rotationPolicy: Always
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: teleport
+  namespace: teleport
+  labels:
+    app.kubernetes.io/name: teleport
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+spec:
+  secretName: teleport-tls
+  secretTemplate:
+    labels:
+      app.kubernetes.io/part-of: platform
+      app.kubernetes.io/managed-by: argocd
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: teleport.jbessa.tech
+  dnsNames:
+    - teleport.jbessa.tech
+    # Teleport présente aussi ce nom quand un client se connecte en mode
+    # multiplex ALPN sur l'entrée web.
+    - "*.teleport.jbessa.tech"
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    # RSA et non ECDSA : certaines versions de tsh et des bibliothèques SSH
+    # sous-jacentes restent plus tolérantes avec RSA sur le canal ALPN.
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always

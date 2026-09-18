@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# GABARIT — ce fichier n'est PAS déployé et ne contient aucun secret.
+#
+# Le jeton doit avoir exactement deux permissions sur la seule zone
+# jbessa.tech : Zone → DNS → Edit, et Zone → Zone → Read. Surtout pas la
+# Global API Key, qui donne accès à l'intégralité du compte Cloudflare.
+#
+# Procédure — le travail se fait EN PLACE sur le .enc.yaml, si bien qu'aucune
+# copie en clair n'existe jamais sur le disque :
+#
+#   export EDITOR=nano                     # ou "code --wait"
+#   cd platform/cert-manager/issuers
+#   cp cloudflare-token.example.yaml cloudflare-token.enc.yaml
+#   sops encrypt --in-place cloudflare-token.enc.yaml
+#   sops edit cloudflare-token.enc.yaml    # coller le jeton
+#
+# NE PAS faire `sops --encrypt fichier.yaml > fichier.enc.yaml` : SOPS applique
+# ses creation_rules au chemin du fichier d'ENTRÉE, et le path_regex de
+# .sops.yaml ne reconnaît que *.enc.yaml. La commande échoue sur
+# « no matching creation rules found ».
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudflare-api-token
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cloudflare-api-token
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+type: Opaque
+stringData:
+  api-token: REMPLACER_PAR_LE_JETON_CLOUDFLARE

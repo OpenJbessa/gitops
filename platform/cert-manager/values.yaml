@@ -1,0 +1,126 @@
+# ---------------------------------------------------------------------------
+# cert-manager — émission ACME DNS-01 via Cloudflare.
+# Budget : 120 Mo de request, 200 Mo de limite, à répartir sur trois
+# déploiements (controller, webhook, cainjector).
+#   controller  64 Mo / 100 Mo
+#   cainjector  32 Mo /  60 Mo
+#   webhook     24 Mo /  40 Mo
+# ---------------------------------------------------------------------------
+
+# Les CRD sont installées par le chart mais survivent à un prune : les
+# supprimer effacerait tous les Certificate et donc tout le TLS du cluster.
+crds:
+  enabled: true
+  keep: true
+
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 64Mi
+  limits:
+    memory: 100Mi
+
+# DNS-01 uniquement : le challenge HTTP-01 n'est jamais utilisé, et les
+# résolveurs par défaut du cluster ne voient pas les zones publiques pendant la
+# propagation. On force la vérification sur des résolveurs publics, sinon
+# cert-manager attend indéfiniment que sa propre vue du DNS se mette à jour.
+extraArgs:
+  - --dns01-recursive-nameservers-only
+  - --dns01-recursive-nameservers=1.1.1.1:53,8.8.8.8:53
+
+securityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+prometheus:
+  enabled: true
+  # Pas de ServiceMonitor : l'opérateur Prometheus est hors périmètre, vmagent
+  # découvre les cibles par les annotations de pod.
+  servicemonitor:
+    enabled: false
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9402"
+  prometheus.io/path: "/metrics"
+
+webhook:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 24Mi
+    limits:
+      memory: 40Mi
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+cainjector:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 60Mi
+  # Par défaut, cainjector met en cache TOUS les Secrets et Certificates du
+  # cluster : c'est de loin le plus gros consommateur de mémoire du trio. Il
+  # n'a besoin ici que d'injecter le caBundle dans le webhook de cert-manager.
+  extraArgs:
+    - --namespace=cert-manager
+    - --enable-certificates-data-source=false
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+# Le contrôleur de démarrage `startupapicheck` est un Job ponctuel qui vérifie
+# que l'API répond. Il est conservé : sans lui, ArgoCD passerait en wave 2
+# avant que le webhook accepte des ClusterIssuer.
+startupapicheck:
+  enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 24Mi
+    limits:
+      memory: 48Mi
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
