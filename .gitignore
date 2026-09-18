@@ -1,0 +1,25 @@
+# La procédure de chiffrement travaille EN PLACE sur les fichiers .enc.yaml :
+# aucune copie en clair n'est censée exister sur le disque (voir README).
+# Ces règles sont un filet de sécurité, pas la protection principale.
+
+# Noms utilisés par la procédure, au cas où un chiffrement échouerait à
+# mi-chemin ou qu'un déchiffrement soit redirigé vers un fichier.
+cloudflare-token.yaml
+credentials.yaml
+secrets.yaml
+*.dec.yaml
+*.plain.yaml
+
+# Clés age. Elles n'ont rien à faire ici, mais une erreur de chemin est vite
+# arrivée.
+*.agekey
+keys.txt
+
+# Kubeconfig rapatrié du VPS pendant l'amorçage.
+kubeconfig
+*.kubeconfig
+
+# Artefacts locaux
+.DS_Store
+*.swp
+*~

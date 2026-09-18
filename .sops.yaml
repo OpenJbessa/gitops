@@ -1,0 +1,14 @@
+# ---------------------------------------------------------------------------
+# Règles de chiffrement SOPS.
+#
+# Un seul destinataire age : la clé privée correspondante est montée dans le
+# repo-server d'ArgoCD (secret `sops-age`) et détenue hors ligne par l'opérateur.
+#
+# `encrypted_regex` est le point important : seuls `data` et `stringData` sont
+# chiffrés. apiVersion, kind, metadata et type restent en clair, sans quoi ni
+# kustomize ni KSOPS ne pourraient identifier la ressource avant déchiffrement.
+# ---------------------------------------------------------------------------
+creation_rules:
+  - path_regex: \.enc\.yaml$
+    encrypted_regex: ^(data|stringData)$
+    age: age176srtrvy8x2wrrfsxfjvg5zzg5pke3repy5ma6yhv8v24h4weenq09k93y
