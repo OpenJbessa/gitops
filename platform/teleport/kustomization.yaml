@@ -1,25 +1,9 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# roles.yaml est absent d'ici volontairement : ce sont des ressources Teleport
+# appliquées avec tctl, pas des objets Kubernetes (voir l'en-tête du fichier).
+# values.yaml est consommé par le chart via $values.
 resources:
   - ingressroute-tcp.yaml
   - recordings-gc.yaml
-
-# roles.yaml n'est PAS un manifeste Kubernetes : ce sont des ressources Teleport,
-# qu'ArgoCD ne sait pas appliquer. Il est embarqué dans une ConfigMap, montée
-# dans le pod auth (cf. extraVolumes dans values.yaml), pour que `tctl` puisse le
-# lire depuis l'intérieur du conteneur.
-#
-# C'est nécessaire parce que l'image teleport est distroless : sans shell ni tar,
-# ni `kubectl cp` ni un pipe vers /dev/stdin ne fonctionnent. `tctl create` exige
-# un vrai chemin de fichier.
-configMapGenerator:
-  - name: teleport-roles
-    files:
-      - roles.yaml
-
-# Nom stable : il est référencé par le volume. Contrepartie assumée — modifier
-# roles.yaml ne redéploie pas le pod, mais de toute façon l'application des rôles
-# reste une commande tctl manuelle.
-generatorOptions:
-  disableNameSuffixHash: true
