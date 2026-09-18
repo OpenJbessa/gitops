@@ -24,6 +24,8 @@ spec:
       chart: cloudnative-pg
       targetRevision: 0.29.0
       helm:
+        # Cf. apps/platform/teleport.yaml : les Jobs de test bloquent la synchronisation.
+        skipTests: true
         releaseName: cnpg
         valueFiles:
           - $values/data/cnpg-operator/values.yaml

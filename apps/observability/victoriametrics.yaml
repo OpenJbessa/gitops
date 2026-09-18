@@ -28,6 +28,8 @@ spec:
       chart: victoria-metrics-single
       targetRevision: 0.46.0
       helm:
+        # Cf. apps/platform/teleport.yaml : les Jobs de test bloquent la synchronisation.
+        skipTests: true
         releaseName: vmsingle
         valueFiles:
           - $values/observability/victoriametrics/single-values.yaml

@@ -25,6 +25,8 @@ spec:
       chart: grafana
       targetRevision: 10.5.15
       helm:
+        # Cf. apps/platform/teleport.yaml : les Jobs de test bloquent la synchronisation.
+        skipTests: true
         releaseName: grafana
         valueFiles:
           - $values/observability/grafana/values.yaml
