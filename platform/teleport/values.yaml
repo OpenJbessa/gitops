@@ -95,9 +95,17 @@ auth:
       session_recording: node-sync
       # MFA obligatoire. Sur une plateforme exposée sur Internet avec un seul
       # compte administrateur, c'est la seule barrière qui compte vraiment.
+      #
+      # `second_factor` (singulier) n'est PAS posé ici, volontairement : le chart
+      # renseigne déjà `second_factors: [otp, webauthn]`, et Teleport v18 refuse
+      # de démarrer si les deux clés coexistent — « must set either SecondFactor
+      # or SecondFactors, not both ».
+      #
+      # Le défaut du chart est de toute façon le bon choix ici : accepter OTP en
+      # plus de WebAuthn donne une méthode de secours à un opérateur unique. Se
+      # restreindre à la clé physique, c'est perdre l'accès avec elle.
       authentication:
         type: local
-        second_factor: webauthn
         webauthn:
           rp_id: teleport.jbessa.tech
       # Durée de vie courte des certificats délivrés : un poste compromis ne
