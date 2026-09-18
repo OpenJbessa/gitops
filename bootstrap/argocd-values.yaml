@@ -4,14 +4,14 @@
 # Budget initialement alloué : 450 Mo de requests. Dépassé de 62 Mo après le
 # premier amorçage, sur le seul application-controller — voir le commentaire de
 # ses ressources plus bas.
-#   application-controller  256 Mo / 512 Mo
+#   application-controller  320 Mo / 768 Mo
 #   repo-server             128 Mo / 192 Mo
 #   server (API + UI)        64 Mo /  96 Mo
 #   redis                    64 Mo /  96 Mo
 #   ------------------------------------------
-#   total                   512 Mo / 896 Mo
+#   total                   576 Mo / 1152 Mo
 #
-# La plateforme reste à 3 980 Mo de requests au repos, sur les 4 600 du plafond.
+# La plateforme reste à 4 044 Mo de requests au repos, sur les 4 600 du plafond.
 #
 # Ce fichier est la source de vérité UNIQUE de la configuration d'ArgoCD.
 # Il est consommé deux fois, et c'est voulu :
@@ -92,18 +92,25 @@ controller:
   #
   # La request reflète donc le régime permanent, qui est ce que l'ordonnanceur
   # doit réserver ; la limite couvre le pic de synchronisation.
+  # VALEUR À RESSERRER une fois la plateforme stable : relever la consommation
+  # de régime avec `kubectl top pod -n argocd` et redescendre la limite à
+  # environ 1,5 fois ce chiffre. 768 Mo est délibérément large pour sortir de
+  # la boucle d'OOM en une fois plutôt qu'en trois paliers.
   resources:
     requests:
       cpu: 100m
-      memory: 256Mi
+      memory: 320Mi
     limits:
-      memory: 512Mi
+      memory: 768Mi
 
   env:
     # 90 % de la limite : le GC Go se déclenche avant l'OOMKill au lieu de le
     # subir. C'est ce qui rend le pic de démarrage survivable plutôt que fatal.
+    # GOMEMLIMIT reste une limite SOUPLE : si le tas vivant la dépasse
+    # réellement, Go alloue quand même et le noyau tue le processus. Elle aide,
+    # elle ne remplace pas un dimensionnement correct.
     - name: GOMEMLIMIT
-      value: "460MiB"
+      value: "690MiB"
 
   # Défauts amont : 20 et 10. Sur ~20 Applications qui se synchronisent par
   # vagues, 4 et 2 suffisent et divisent le nombre de goroutines concurrentes.
