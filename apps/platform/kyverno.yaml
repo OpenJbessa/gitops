@@ -56,6 +56,9 @@ spec:
       - CreateNamespace=true
       # Les CRD de Kyverno figurent parmi les plus grosses de l'écosystème.
       - ServerSideApply=true
+      # Sans cette option, la synchronisation réapplique les champs listés dans
+      # ignoreDifferences et les rouvre en écart au cycle suivant.
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:
@@ -64,6 +67,15 @@ spec:
         maxDuration: 5m
 
   ignoreDifferences:
+    # Le chart rend `metadata.labels: {}` sur ses onze CRD. Le serveur d'API
+    # supprime les maps vides à l'écriture : l'état désiré porte donc un champ
+    # que l'état réel n'aura jamais, et l'Application reste OutOfSync en
+    # permanence. Les labels d'une CRD n'ont aucun effet fonctionnel.
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jsonPointers:
+        - /metadata/labels
+
     # Kyverno auto-injecte son caBundle dans ses propres webhooks.
     - group: admissionregistration.k8s.io
       kind: ValidatingWebhookConfiguration
