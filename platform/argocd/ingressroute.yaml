@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Interface ArgoCD sur argocd.jbessa.tech.
+#
+# Le service est en mode `insecure` (cf. configs.params dans argocd-values.yaml) :
+# Traefik termine le TLS avec le certificat wildcard du TLSStore par défaut, et
+# parle en clair au pod sur le réseau interne du cluster. Une double
+# terminaison TLS ne protégerait rien de plus ici et coûterait du CPU.
+#
+# Exposer cette interface est un choix : pour une plateforme portfolio, elle
+# fait partie de ce qu'on montre. Si un jour l'accès doit passer uniquement par
+# Teleport, supprimer ce fichier suffit — l'API reste joignable par
+# `kubectl port-forward` à travers l'accès Kubernetes de Teleport.
+# ---------------------------------------------------------------------------
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: argocd-server
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`argocd.jbessa.tech`)
+      services:
+        - name: argocd-server
+          port: 80
+  # Aucun secret précisé : Traefik sert le certificat du TLSStore `default`.
+  tls: {}

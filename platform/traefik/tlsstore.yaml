@@ -1,0 +1,27 @@
+# ---------------------------------------------------------------------------
+# Certificat par défaut de Traefik.
+#
+# Le TLSStore nommé `default` est celui que Traefik utilise pour tout routeur
+# déclarant `tls: {}` sans préciser de secret. Un seul certificat wildcard sert
+# donc toutes les entrées HTTP du cluster, ce qui évite autant d'émissions ACME
+# que de sous-domaines — et les limites de débit de Let's Encrypt qui vont avec.
+#
+# Le secret référencé est produit par le Certificate de la wave 2, donc APRÈS
+# cette ressource. C'est sans conséquence : Traefik sert un certificat
+# auto-signé en attendant, puis bascule dès que le secret apparaît.
+# ---------------------------------------------------------------------------
+apiVersion: traefik.io/v1alpha1
+kind: TLSStore
+metadata:
+  name: default
+  namespace: traefik
+  annotations:
+    # Appliqué après le chart : la CRD TLSStore doit exister d'abord.
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+spec:
+  defaultCertificate:
+    secretName: wildcard-jbessa-tech-tls

@@ -1,0 +1,164 @@
+# ---------------------------------------------------------------------------
+# Traefik — point d'entrée unique, exposé par le ServiceLB de K3s.
+# Budget : 80 Mo de request, 150 Mo de limite.
+#
+# Le chart v41 valide ses valeurs contre un schéma JSON strict : une clé mal
+# placée fait échouer le rendu au lieu d'être ignorée silencieusement. C'est
+# une bonne nouvelle, mais ça veut dire que ce fichier est lié à la majeure du
+# chart — une montée de majeure proposée par Renovate demande une relecture,
+# pas un merge automatique.
+# ---------------------------------------------------------------------------
+
+deployment:
+  enabled: true
+  kind: Deployment
+  # Un seul réplica : le ServiceLB de K3s n'a de toute façon qu'un nœud vers qui
+  # router. Un redéploiement coupe le trafic quelques secondes, c'est la
+  # contrepartie assumée du mono-nœud.
+  replicas: 1
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9100"
+    prometheus.io/path: "/metrics"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 80Mi
+  limits:
+    memory: 150Mi
+
+# ---------------------------------------------------------------------------
+# Exposition
+# ---------------------------------------------------------------------------
+service:
+  enabled: true
+  spec:
+    type: LoadBalancer
+    # Préserve l'adresse IP réelle du client jusqu'aux pods. Sur un nœud unique
+    # il n'y a aucun saut supplémentaire à éviter, donc « Local » est gratuit —
+    # et sans lui, journaux et limites de débit ne verraient que l'IP du nœud.
+    externalTrafficPolicy: Local
+
+ports:
+  # Le port 8080 interne du tableau de bord reste fermé.
+  traefik:
+    expose:
+      default: false
+
+  web:
+    port: 8000
+    exposedPort: 80
+    expose:
+      default: true
+    http:
+      # Redirection portée par l'entrypoint plutôt que par un Middleware : évite
+      # d'avoir à autoriser les références cross-namespace depuis chaque
+      # IngressRoute applicatif.
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+          priority: 10
+
+  websecure:
+    port: 8443
+    exposedPort: 443
+    expose:
+      default: true
+    http:
+      tls:
+        enabled: true
+    # HTTP/3 désactivé : il ouvrirait un port UDP supplémentaire sur le ServiceLB
+    # et ne sert à rien tant que le passthrough TCP de Teleport partage l'entrée.
+    http3:
+      enabled: false
+
+  metrics:
+    port: 9100
+    expose:
+      default: false
+
+# Les ports internes sont au-dessus de 1024 : le conteneur n'a besoin d'aucune
+# capability pour les lier, le mapping 80/443 étant fait par klipper-lb.
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# ---------------------------------------------------------------------------
+# Fournisseurs
+# ---------------------------------------------------------------------------
+providers:
+  kubernetesCRD:
+    enabled: true
+    # Chaque IngressRoute vit dans le namespace de son Service, et le certificat
+    # par défaut vient du TLSStore : aucune référence croisée n'est nécessaire,
+    # donc on n'ouvre pas la porte.
+    allowCrossNamespace: false
+    allowExternalNameServices: false
+  # L'objet Ingress standard n'est pas utilisé : tout passe par IngressRoute,
+  # seul capable d'exprimer le passthrough TCP dont Teleport a besoin.
+  kubernetesIngress:
+    enabled: false
+  kubernetesGateway:
+    enabled: false
+
+# ---------------------------------------------------------------------------
+# Observabilité
+# ---------------------------------------------------------------------------
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addRoutersLabels: true
+    addServicesLabels: true
+    # vmagent découvre la cible par les annotations de pod ci-dessus ; ni Service
+    # dédié ni ServiceMonitor (l'opérateur Prometheus est hors périmètre).
+    service:
+      enabled: false
+    serviceMonitor:
+      enabled: false
+
+log:
+  level: INFO
+  format: common
+
+# Journaux d'accès désactivés : aucune collecte centralisée n'est prévue dans ce
+# périmètre, et les écrire sur le disque du nœud pour ne jamais les lire ne
+# ferait que consommer de l'I/O. Les métriques Prometheus couvrent le besoin
+# (taux de 5xx, latence, requêtes par seconde).
+accessLog:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Divers
+# ---------------------------------------------------------------------------
+# Le tableau de bord n'est pas exposé : Traefik est la surface la plus exposée
+# du cluster, son interface d'administration n'a rien à faire sur Internet.
+ingressRoute:
+  dashboard:
+    enabled: false
+  healthcheck:
+    enabled: false
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# Aucun PodDisruptionBudget : sur un nœud unique il n'existe pas de scénario où
+# il protégerait quoi que ce soit, et il bloquerait les drains.
+podDisruptionBudget:
+  enabled: false
+
+autoscaling:
+  enabled: false
