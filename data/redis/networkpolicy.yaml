@@ -1,0 +1,42 @@
+# API et worker vers Redis. Le front Nuxt vit dans le même namespace `apps` et
+# n'a rien à y faire : la sélection porte donc sur les labels de pod, pas sur le
+# namespace entier.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apps-to-redis
+  namespace: data
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: apps
+          podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - api
+                  - worker
+      ports:
+        - protocol: TCP
+          port: 6379
+    # KEDA interroge Redis pour connaître le retard du consumer group : sans ce
+    # flux, le ScaledObject reste bloqué et le worker ne monte jamais en charge.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keda
+      ports:
+        - protocol: TCP
+          port: 6379

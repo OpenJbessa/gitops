@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# Flux autorisés vers et depuis PostgreSQL.
+#
+# Le namespace `data` refuse tout par défaut (platform/namespaces/default-deny.yaml).
+# On rouvre ici uniquement ce dont le cluster a besoin.
+# ---------------------------------------------------------------------------
+
+# API et worker vers la base. Sélection par label de pod et non par namespace
+# entier : le front Nuxt vit dans le même namespace et n'a rien à faire ici.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apps-to-postgres
+  namespace: data
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: apps
+          podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - api
+                  - worker
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# L'instance manager de CloudNativePG, qui tourne DANS le pod PostgreSQL,
+# dialogue avec le kube-apiserver : il y publie l'état de l'instance et y lit sa
+# configuration. Sans cette sortie, le cluster reste bloqué à l'initialisation
+# sans message explicite côté base.
+#
+# Pas de `to:` : l'adresse du kube-apiserver sur K3s dépend de l'IP du nœud et
+# du CIDR de services, deux valeurs qui ne sont pas connues de ce dépôt. La
+# restriction porte donc sur le port, qui est suffisamment spécifique.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-to-apiserver
+  namespace: data
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: postgres
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 6443

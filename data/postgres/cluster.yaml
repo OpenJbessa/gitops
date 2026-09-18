@@ -1,0 +1,140 @@
+# ---------------------------------------------------------------------------
+# Cluster PostgreSQL — une seule instance.
+#
+# Aucune haute disponibilité n'est revendiquée : un seul nœud, donc un seul
+# primaire, pas de réplique, pas de bascule. Une mise à jour mineure de
+# PostgreSQL ou un redémarrage du pod coupe la base le temps du redémarrage, et
+# l'API le voit. C'est le compromis assumé du mono-nœud.
+#
+# Ce que ça change concrètement : `primaryUpdateStrategy: unsupervised` laisse
+# l'opérateur redémarrer seul. En supervisé, il attendrait une action manuelle
+# qui n'aurait aucun sens sans second nœud vers qui basculer.
+# ---------------------------------------------------------------------------
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres
+  namespace: data
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+spec:
+  instances: 1
+  primaryUpdateStrategy: unsupervised
+
+  # `imageName` n'est volontairement pas renseigné : l'opérateur utilise alors
+  # l'image PostgreSQL qu'il embarque, figée par SA version — elle-même épinglée
+  # dans apps/data/cnpg-operator.yaml. La version de PostgreSQL suit donc celle
+  # de l'opérateur, ce qui évite un couple de versions à maintenir à la main.
+  # Pour la figer explicitement, relever le tag effectif après le déploiement :
+  #   kubectl get cluster postgres -n data -o jsonpath='{.status.image}'
+  # puis le reporter ici sous `imageName:`.
+
+  # -------------------------------------------------------------------------
+  # Réglages mémoire — tous dérivés du budget de 768 Mo / 1 Go.
+  # -------------------------------------------------------------------------
+  postgresql:
+    parameters:
+      # 25 % de la mémoire allouée, règle usuelle. À 192 Mo on reste très en
+      # dessous de la limite du conteneur, ce qui laisse de la place au reste :
+      # work_mem par connexion, catalogues, et le processus de l'instance manager.
+      shared_buffers: 192MB
+
+      # Estimation de ce que le cache disque du noyau peut garder. Ce n'est pas
+      # une allocation, seulement une indication au planificateur — mais sur un
+      # nœud partagé par quinze autres charges, annoncer 4 Go serait un mensonge
+      # qui pousserait le planificateur vers de mauvais plans.
+      effective_cache_size: 384MB
+
+      # 60 connexions × 4 Mo de work_mem = 240 Mo dans le pire cas théorique.
+      # L'API et le worker utilisent un pool bien plus petit ; ce plafond est là
+      # pour qu'une fuite de connexions ne fasse pas tomber le nœud entier.
+      max_connections: "60"
+      work_mem: 4MB
+      maintenance_work_mem: 64MB
+
+      # Disque local unique, sans cache de contrôleur : un SSD NVMe se comporte
+      # comme du stockage à accès aléatoire peu coûteux.
+      random_page_cost: "1.1"
+      effective_io_concurrency: "200"
+
+      # Journalisation utile au diagnostic sans inonder stdout.
+      log_min_duration_statement: "1000"
+      log_checkpoints: "on"
+      log_connections: "off"
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 768Mi
+    limits:
+      memory: 1Gi
+
+  storage:
+    size: 10Gi
+    storageClass: local-path
+
+  # Journaux de transactions sur le même volume : séparer WAL et données n'a
+  # d'intérêt que sur des disques distincts, ce qui n'est pas le cas ici.
+
+  # -------------------------------------------------------------------------
+  # Initialisation
+  # -------------------------------------------------------------------------
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      # Mot de passe du rôle applicatif, chiffré par SOPS.
+      secret:
+        name: postgres-app
+      encoding: UTF8
+      localeCollate: C
+      localeCType: C
+
+  enableSuperuserAccess: true
+  superuserSecret:
+    name: postgres-superuser
+
+  monitoring:
+    enablePodMonitor: false
+    # CNPG expose ses métriques sur 9187. vmagent les récupère par annotation.
+    podMonitorMetricRelabelings: []
+
+  # -------------------------------------------------------------------------
+  # Sauvegardes — STRUCTURE PRÊTE, VOLONTAIREMENT DÉSACTIVÉE.
+  #
+  # La destination de stockage n'est pas arbitrée : un bucket S3 compatible
+  # (Scaleway, Backblaze, Cloudflare R2) coûte quelques euros par mois, un
+  # volume local ne protège de rien puisqu'il partage le disque du nœud.
+  #
+  # Tant que ce bloc est commenté, la seule protection est la copie du volume
+  # local-path — c'est-à-dire aucune protection contre la perte du VPS. Le
+  # README le liste comme risque ouvert.
+  #
+  # Pour activer : créer le secret des identifiants objet, décommenter, et
+  # ajouter un ScheduledBackup.
+  # -------------------------------------------------------------------------
+  # backup:
+  #   retentionPolicy: "14d"
+  #   barmanObjectStore:
+  #     destinationPath: s3://<BUCKET>/postgres
+  #     endpointURL: https://<ENDPOINT>
+  #     s3Credentials:
+  #       accessKeyId:
+  #         name: postgres-backup-credentials
+  #         key: ACCESS_KEY_ID
+  #       secretAccessKey:
+  #         name: postgres-backup-credentials
+  #         key: ACCESS_SECRET_KEY
+  #     wal:
+  #       compression: gzip
+  #       maxParallel: 1
+  #     data:
+  #       compression: gzip
+  #       jobs: 1
+
+  affinity:
+    # Un seul nœud : l'anti-affinité entre instances n'a rien à répartir et
+    # empêcherait le pod d'être planifié.
+    enablePodAntiAffinity: false

@@ -1,0 +1,118 @@
+# ---------------------------------------------------------------------------
+# Redis — instance unique, manifests bruts.
+# Budget : 256 Mo de request, 384 Mo de limite.
+#
+# Pourquoi pas un chart : l'usage est une instance sans réplication, sans
+# sentinelle, sans cluster. Tous les charts Redis disponibles sont conçus pour
+# l'inverse et exposent des dizaines de valeurs qu'il faut désactiver une à une.
+# Un StatefulSet de soixante lignes donne un contrôle direct sur maxmemory, la
+# persistance et le contexte de sécurité, et supprime une dépendance amont.
+#
+# StatefulSet et non Deployment : garantit un volume stable et un seul pod à la
+# fois pendant les redéploiements (pas de recouvrement entre ancien et nouveau
+# pod sur le même PVC ReadWriteOnce).
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: data
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/part-of: data
+        app.kubernetes.io/managed-by: argocd
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # UID de l'utilisateur `redis` dans l'image officielle.
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          # renovate: datasource=docker depName=redis
+          image: redis:8.8.2-alpine
+          command:
+            - redis-server
+            - /etc/redis/redis.conf
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 384Mi
+          # Sondes tolérantes : au redémarrage, Redis rejoue son AOF avant
+          # d'accepter des connexions. Sur un disque partagé par PostgreSQL et
+          # VictoriaMetrics, ça peut prendre plusieurs dizaines de secondes.
+          startupProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/redis
+              readOnly: true
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: redis-config
+      # Laisse le temps à Redis de vider son tampon AOF avant d'être tué.
+      terminationGracePeriodSeconds: 60
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: redis
+          app.kubernetes.io/part-of: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: local-path
+        resources:
+          requests:
+            # 2 Go pour 256 Mo de données en mémoire : l'AOF grossit entre deux
+            # réécritures, et local-path ne permet pas d'agrandir un volume.
+            storage: 2Gi

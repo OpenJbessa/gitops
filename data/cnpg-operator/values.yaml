@@ -1,0 +1,48 @@
+# ---------------------------------------------------------------------------
+# Opérateur CloudNativePG.
+# Budget : 100 Mo de request, 150 Mo de limite.
+#
+# L'opérateur vit dans `cnpg-system`, séparé du namespace `data` où tournent les
+# bases. Ce n'est pas de la cosmétique : `data` porte une NetworkPolicy de refus
+# par défaut, qui bloquerait les appels du kube-apiserver vers le webhook
+# d'admission de l'opérateur — et donc toute création de Cluster.
+# ---------------------------------------------------------------------------
+
+replicaCount: 1
+
+# Les CRD sont posées par le chart. Leur suppression effacerait la définition
+# même du Cluster PostgreSQL, donc l'inventaire de la base.
+crds:
+  create: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 100Mi
+  limits:
+    memory: 150Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+monitoring:
+  # L'opérateur Prometheus est hors périmètre : vmagent découvre la cible par
+  # les annotations de pod.
+  podMonitorEnabled: false
+  grafanaDashboard:
+    create: false
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
