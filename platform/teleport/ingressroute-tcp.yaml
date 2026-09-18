@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+# Entrée Teleport — passthrough TCP, pas de terminaison TLS côté Traefik.
+#
+# Teleport multiplexe plusieurs protocoles sur le port 443 en s'appuyant sur
+# l'extension ALPN de TLS : c'est lui qui, après la poignée de main, décide si
+# la connexion est du HTTP, du SSH ou du proxy Kubernetes. Si Traefik terminait
+# le TLS, cette information disparaîtrait et `tsh` cesserait de fonctionner.
+#
+# D'où un IngressRouteTCP qui route sur le seul SNI, sans jamais déchiffrer.
+# C'est aussi la raison pour laquelle teleport.jbessa.tech doit rester en
+# « DNS only » côté Cloudflare : le proxy Cloudflare réécrit la session TLS.
+# ---------------------------------------------------------------------------
+apiVersion: traefik.io/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: teleport
+  namespace: teleport
+  annotations:
+    # Après le chart, pour que le Service existe.
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/name: teleport
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # HostSNI fonctionne ici parce que le client annonce le nom en clair dans
+    # le ClientHello, avant tout chiffrement.
+    - match: HostSNI(`teleport.jbessa.tech`)
+      services:
+        - name: teleport
+          port: 443
+  tls:
+    passthrough: true

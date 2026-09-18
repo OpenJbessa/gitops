@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------------------
+# Rôles Teleport — RESSOURCES TELEPORT, PAS DES MANIFESTES KUBERNETES.
+#
+# Ce fichier est volontairement absent de kustomization.yaml : ArgoCD ne sait
+# pas l'appliquer, et il ne doit pas essayer.
+#
+# Pourquoi hors GitOps : les rôles Teleport ne deviennent des objets Kubernetes
+# que si l'on active l'opérateur Teleport, qui coûte environ 64 Mo de plus —
+# soit un tiers au-dessus du budget alloué à Teleport. Le compromis retenu est
+# de garder le fichier ici comme source de vérité versionnée, et de l'appliquer
+# avec tctl lors de la même session que la création du jeton de l'agent hôte.
+#
+#   kubectl exec -n teleport deploy/teleport-auth -- tctl create -f - < roles.yaml
+#
+# Toute modification passe donc par une pull request, puis par cette commande.
+# C'est la seule brique du dépôt dont l'application n'est pas automatique, et
+# le README la liste comme telle.
+# ---------------------------------------------------------------------------
+kind: role
+version: v7
+metadata:
+  name: platform-admin
+  description: Accès complet SSH et Kubernetes à la plateforme
+spec:
+  allow:
+    # Comptes UNIX ouverts sur le nœud. `debian` est le compte non privilégié
+    # du VPS Hostinger ; `root` reste accessible parce qu'un nœud unique sans
+    # accès root est un nœud qu'on ne peut pas réparer.
+    logins:
+      - debian
+      - root
+    # Un seul nœud : le joker ne masque rien.
+    node_labels:
+      "*": "*"
+    # cluster-admin au sens Kubernetes. Teleport présente l'utilisateur au
+    # kube-apiserver comme membre de system:masters.
+    kubernetes_groups:
+      - system:masters
+    kubernetes_labels:
+      "*": "*"
+    kubernetes_resources:
+      - kind: "*"
+        namespace: "*"
+        name: "*"
+        verbs:
+          - "*"
+    # Droits sur les ressources Teleport elles-mêmes (création d'utilisateurs,
+    # de jetons d'enrôlement, lecture des enregistrements de sessions).
+    rules:
+      - resources:
+          - "*"
+        verbs:
+          - "*"
+  options:
+    # Certificats de 8 heures : une journée de travail, pas plus. Au-delà,
+    # il faut se réauthentifier avec la clé de sécurité.
+    max_session_ttl: 8h
+    # Toute session SSH et Kubernetes est enregistrée. Le CronJob de purge
+    # borne ce que ça occupe sur le disque.
+    record_session:
+      default: best_effort
+      ssh: best_effort
+      k8s: best_effort
+    # Déconnecte la session dès que le certificat expire, sans attendre que le
+    # client le remarque.
+    disconnect_expired_cert: true
+    # Interdit le transfert de port et le partage d'agent SSH : deux vecteurs
+    # de rebond depuis un poste compromis vers le réseau interne.
+    port_forwarding: false
+    forward_agent: false

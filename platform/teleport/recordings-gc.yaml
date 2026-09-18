@@ -1,0 +1,92 @@
+# ---------------------------------------------------------------------------
+# Purge des enregistrements de sessions.
+#
+# Teleport Community Edition n'a pas de rétention native sur le stockage local :
+# la configuration `audit_sessions_uri` ne connaît de TTL que pour les backends
+# objets (S3, GCS). Sur un PVC local-path, les enregistrements s'accumulent
+# jusqu'à saturer le disque du nœud — qui est aussi celui de PostgreSQL, de
+# VictoriaMetrics et du système.
+#
+# Ce CronJob est donc un garde-fou disque, pas une politique de conformité.
+# Il purge ce qui dépasse 7 jours, y compris les fichiers d'audit : c'est une
+# rétention courte assumée pour une plateforme personnelle.
+#
+# Le PVC est monté en ReadWriteOnce et déjà utilisé par le pod auth. Ça ne
+# fonctionne que parce que les deux pods atterrissent sur le même nœud — ce qui
+# est garanti ici, il n'y en a qu'un.
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: teleport-recordings-gc
+  namespace: teleport
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/name: teleport-recordings-gc
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+spec:
+  # 03h15 UTC : hors des fenêtres de trafic et décalé des renouvellements ACME.
+  schedule: "15 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: teleport-recordings-gc
+            app.kubernetes.io/part-of: platform
+            app.kubernetes.io/managed-by: argocd
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            # Même UID que Teleport, sinon les fichiers ne sont pas supprimables.
+            runAsUser: 9807
+            runAsGroup: 9807
+            fsGroup: 9807
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: gc
+              # renovate: datasource=docker depName=busybox
+              image: busybox:1.37.0
+              command:
+                - /bin/sh
+                - -c
+              args:
+                - |
+                  set -eu
+                  echo "Purge des enregistrements antérieurs à 7 jours"
+                  find /var/lib/teleport/log -type f -mtime +7 -print -delete
+                  echo "Occupation restante :"
+                  du -sh /var/lib/teleport/log || true
+              securityContext:
+                runAsNonRoot: true
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  memory: 32Mi
+              volumeMounts:
+                - name: data
+                  mountPath: /var/lib/teleport
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                # À CONFIRMER après le premier déploiement : le chart nomme le
+                # PVC d'après la release. Vérifier avec
+                #   kubectl get pvc -n teleport
+                claimName: teleport

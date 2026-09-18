@@ -1,0 +1,106 @@
+# ---------------------------------------------------------------------------
+# KEDA — autoscaling du worker de file sur le retard du consumer group Redis.
+# Budget : 120 Mo de request, 200 Mo de limite, répartis sur trois déploiements :
+#   operator       64 Mo / 100 Mo   (réconcilie les ScaledObject)
+#   metricsServer  40 Mo /  64 Mo   (APIService external.metrics.k8s.io)
+#   webhooks       16 Mo /  36 Mo   (validation des ScaledObject)
+#
+# C'est serré, mais KEDA ne pilote ici qu'un seul ScaledObject : la charge est
+# proportionnelle au nombre d'objets surveillés, pas au trafic.
+# ---------------------------------------------------------------------------
+
+operator:
+  replicaCount: 1
+
+metricsServer:
+  replicaCount: 1
+
+webhooks:
+  enabled: true
+  replicaCount: 1
+
+resources:
+  operator:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 100Mi
+  metricServer:
+    requests:
+      cpu: 25m
+      memory: 40Mi
+    limits:
+      memory: 64Mi
+  webhooks:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 36Mi
+
+podSecurityContext:
+  operator:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  metricServer:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  webhooks:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+securityContext:
+  operator:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  metricServer:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  webhooks:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+prometheus:
+  metricServer:
+    enabled: true
+    serviceMonitor:
+      enabled: false
+    podMonitor:
+      enabled: false
+  operator:
+    enabled: true
+    serviceMonitor:
+      enabled: false
+    podMonitor:
+      enabled: false
+
+podAnnotations:
+  keda:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+
+# Un seul nœud : ni PDB ni topology spread n'ont de sens.
+podDisruptionBudget:
+  operator:
+    enabled: false
+  metricServer:
+    enabled: false
+  webhooks:
+    enabled: false

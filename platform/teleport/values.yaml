@@ -1,0 +1,137 @@
+# ---------------------------------------------------------------------------
+# Teleport Community Edition — instance unique.
+# Budget : 200 Mo de request, 300 Mo de limite, à partager entre les deux
+# déploiements du chart (auth et proxy), soit 100/150 chacun.
+#
+# C'est la brique la plus tendue du budget. Teleport avec SQLite et un seul
+# utilisateur tient dans cette enveloppe, mais l'alerte mémoire de la wave 6
+# couvre ce namespace en priorité. Si le proxy se fait tuer par l'OOM killer,
+# c'est ici qu'il faut regarder en premier.
+# ---------------------------------------------------------------------------
+
+clusterName: teleport.jbessa.tech
+
+# Stockage local sur PVC : ni DynamoDB, ni Firestore, ni etcd externe. C'est le
+# seul mode cohérent avec un nœud unique, et il se sauvegarde par une copie du
+# volume.
+chartMode: standalone
+
+# Tout sur le port 443 : web, SSH via tsh, accès Kubernetes. C'est ce qui rend
+# possible le passthrough TCP par SNI côté Traefik, et ce qui permettra de
+# fermer définitivement le port 22 du VPS.
+proxyListenerMode: multiplex
+
+# Community Edition.
+enterprise: false
+
+highAvailability:
+  replicaCount: 1
+  # cert-manager est piloté hors du chart : le Certificate est décrit dans
+  # platform/cert-manager/issuers/certificates.yaml pour que tous les
+  # certificats du cluster soient au même endroit.
+  certManager:
+    enabled: false
+
+# Le secret est produit par ce Certificate. Teleport le monte et termine
+# lui-même le TLS : Traefik ne fait que relayer les octets.
+tls:
+  existingSecretName: teleport-tls
+
+# ClusterIP et surtout PAS LoadBalancer : le ServiceLB de K3s tenterait de
+# lier le port 443 de l'hôte, déjà pris par Traefik. Le trafic arrive par
+# l'IngressRouteTCP en passthrough (cf. ingressroute-tcp.yaml).
+service:
+  type: ClusterIP
+
+persistence:
+  enabled: true
+  volumeSize: 5Gi
+  # Le chart n'expose aucune clé de StorageClass (vérifié sur 18.10.0) : le PVC
+  # est créé sans `storageClassName` et hérite donc de la classe par défaut du
+  # cluster, qui est `local-path` sur K3s. C'est bien ce qu'on veut, mais ça
+  # repose sur un défaut implicite — à revérifier si la classe par défaut change.
+  # Le volume est un répertoire du disque du nœud : il survit au pod, pas au
+  # nœud. D'où la sauvegarde évoquée dans le README.
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 100Mi
+  limits:
+    memory: 150Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 9807
+  runAsGroup: 9807
+  fsGroup: 9807
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 9807
+  # Pas de readOnlyRootFilesystem : Teleport écrit hors de son volume de
+  # données au démarrage. La policy Kyverno correspondante ne vise que le
+  # namespace `apps`, précisément pour ce genre de cas.
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# ---------------------------------------------------------------------------
+# Configuration Teleport
+# ---------------------------------------------------------------------------
+auth:
+  teleportConfig:
+    teleport:
+      log:
+        severity: INFO
+        output: stderr
+    auth_service:
+      # Enregistrement côté nœud avec remontée synchrone vers auth : les
+      # fichiers atterrissent sur le PVC, purgés par le CronJob de rétention
+      # (cf. recordings-gc.yaml).
+      session_recording: node-sync
+      # MFA obligatoire. Sur une plateforme exposée sur Internet avec un seul
+      # compte administrateur, c'est la seule barrière qui compte vraiment.
+      authentication:
+        type: local
+        second_factor: webauthn
+        webauthn:
+          rp_id: teleport.jbessa.tech
+      # Durée de vie courte des certificats délivrés : un poste compromis ne
+      # garde l'accès que quelques heures.
+      client_idle_timeout: 30m
+      disconnect_expired_cert: true
+
+proxy:
+  # Piège du chart : dès que les pods proxy sont réplicables — ce qui est le cas
+  # ici, puisqu'on leur fournit un certificat via tls.existingSecretName — ils
+  # passent à 2 réplicas MÊME si highAvailability.replicaCount vaut 1. Sur un
+  # nœud unique, c'est 256 Mo réservés pour une redondance qui n'existe pas.
+  highAvailability:
+    replicaCount: 1
+
+  teleportConfig:
+    teleport:
+      log:
+        severity: INFO
+        output: stderr
+    proxy_service:
+      public_addr: teleport.jbessa.tech:443
+      # Le tableau de bord web de Teleport sert aussi de porte d'entrée à
+      # l'accès Kubernetes depuis un navigateur.
+      https_keypairs: []
+
+# Métriques exposées pour vmagent. Le chart regroupe les annotations par type
+# d'objet (`config`, `deployment`, `pod`, `service`…) et non par composant : les
+# pods auth et proxy reçoivent donc les mêmes.
+annotations:
+  pod:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "3000"
+    prometheus.io/path: "/metrics"
+
+podMonitor:
+  enabled: false
