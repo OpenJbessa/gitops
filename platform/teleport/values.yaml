@@ -128,9 +128,15 @@ proxy:
         output: stderr
     proxy_service:
       public_addr: teleport.jbessa.tech:443
-      # Le tableau de bord web de Teleport sert aussi de porte d'entrée à
-      # l'accès Kubernetes depuis un navigateur.
-      https_keypairs: []
+      # `https_keypairs` n'est PAS renseigné ici, et c'est délibéré : le chart le
+      # remplit lui-même à partir de tls.existingSecretName, en pointant sur
+      # /etc/teleport-tls/tls.crt et tls.key — le certificat Let's Encrypt monté
+      # depuis le secret produit par cert-manager.
+      #
+      # Y poser une liste vide, comme je l'avais fait, écrase ce calcul : Teleport
+      # ignore alors le certificat monté et sert un auto-signé. Le navigateur
+      # laisse passer après un avertissement, mais Teleport Connect et `tsh`
+      # valident strictement et refusent la connexion.
 
 # Métriques exposées pour vmagent. Le chart regroupe les annotations par type
 # d'objet (`config`, `deployment`, `pod`, `service`…) et non par composant : les
