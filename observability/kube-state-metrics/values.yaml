@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------------------
+# kube-state-metrics — 48 Mo de request, 96 Mo de limite.
+#
+# COMPOSANT AJOUTÉ, absent de la table de budget initiale. Justification :
+#
+# Deux livrables demandés en dépendent et ne sont réalisables autrement :
+#   - l'alerte « pod en CrashLoopBackOff » : ni cAdvisor ni le kubelet
+#     n'exposent l'état d'attente d'un conteneur ni son compteur de
+#     redémarrages. Seul kube-state-metrics publie
+#     kube_pod_container_status_waiting_reason ;
+#   - le panneau « nombre de réplicas worker » du tableau de bord, qui lit
+#     kube_deployment_status_replicas.
+#
+# Ce n'est PAS kube-prometheus-stack ni l'opérateur Prometheus, tous deux hors
+# périmètre : c'est un exportateur unique, sans CRD ni webhook.
+#
+# La collecte est restreinte aux quatre ressources réellement utilisées. Par
+# défaut, kube-state-metrics publie une série par objet de trente types
+# différents, ce qui pèserait plus sur VictoriaMetrics que sur lui-même.
+# ---------------------------------------------------------------------------
+
+fullnameOverride: kube-state-metrics
+replicas: 1
+
+collectors:
+  - pods
+  - deployments
+  - statefulsets
+  - nodes
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 48Mi
+  limits:
+    memory: 96Mi
+
+securityContext:
+  enabled: true
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# Découverte par annotation, comme tout le reste : pas de ServiceMonitor.
+prometheus:
+  monitor:
+    enabled: false
+
+customLabels: {}
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+# Le service `metrics` est déjà annoté ci-dessus au niveau du pod ; inutile de
+# l'exposer deux fois.
+selfMonitor:
+  enabled: false

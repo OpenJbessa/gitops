@@ -1,0 +1,314 @@
+{
+  "uid": "plateforme",
+  "title": "Plateforme",
+  "description": "Vue unique de la plateforme : trafic, file, base et nœud. Tableau de bord provisionné depuis le dépôt gitops, toute modification passe par une pull request.",
+  "tags": ["plateforme", "gitops"],
+  "timezone": "browser",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Trafic HTTP",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Latence API (p95 / p50)",
+      "description": "Mesurée par Traefik, donc vue du client : inclut le temps réseau interne, contrairement à une mesure prise dans Laravel.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "lineWidth": 1, "fillOpacity": 8, "showPoints": "never" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.5 },
+              { "color": "red", "value": 2 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(traefik_service_request_duration_seconds_bucket{service=~\"apps-api.*\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(traefik_service_request_duration_seconds_bucket{service=~\"apps-api.*\"}[5m])))",
+          "legendFormat": "p50"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Requêtes par seconde",
+      "description": "Toutes entrées confondues, réparties par service Traefik.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 7, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": { "lineWidth": 1, "fillOpacity": 15, "stacking": { "mode": "normal" }, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (rate(traefik_service_requests_total[5m]))",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Taux d'erreurs 5xx",
+      "description": "Part des réponses en erreur serveur sur l'ensemble du trafic, fenêtre de 5 minutes.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 5, "x": 19, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(traefik_service_requests_total{code=~\"5..\"}[5m])) / clamp_min(sum(rate(traefik_service_requests_total[5m])), 0.001)",
+          "legendFormat": "5xx"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "File de traitement",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Retard du consumer group Redis",
+      "description": "Série publiée par KEDA : c'est la valeur exacte sur laquelle il décide d'ajouter un worker. Le seuil de montée en charge est à 50, l'alerte à 500.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 50 },
+              { "color": "red", "value": 500 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "keda_scaler_metrics_value{scaledObject=\"worker\"}",
+          "legendFormat": "messages en retard"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Réplicas worker",
+      "description": "Plafonné à 4 par le budget mémoire : 4 x 128 Mo. Une courbe collée au plafond signale que la file ne se résorbe plus.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 5,
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "lineInterpolation": "stepAfter",
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "kube_deployment_status_replicas{namespace=\"apps\",deployment=\"worker\"}",
+          "legendFormat": "souhaités"
+        },
+        {
+          "refId": "B",
+          "expr": "kube_deployment_status_replicas_ready{namespace=\"apps\",deployment=\"worker\"}",
+          "legendFormat": "prêts"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Base de données et nœud",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Connexions PostgreSQL",
+      "description": "Plafond fixé à 60 dans la configuration du cluster. Une courbe qui monte sans redescendre trahit des connexions non libérées.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 40 },
+              { "color": "red", "value": 55 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(cnpg_backends_total{namespace=\"data\"})",
+          "legendFormat": "connexions ouvertes"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Mémoire du nœud",
+      "description": "Mesure du kubelet. L'alerte NoeudMemoireSaturee se déclenche à 7 Go sur les 8 du VPS.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 6442450944 },
+              { "color": "red", "value": 7516192768 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_memory_working_set_bytes",
+          "legendFormat": "utilisée"
+        },
+        {
+          "refId": "B",
+          "expr": "machine_memory_bytes",
+          "legendFormat": "totale"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU du nœud",
+      "description": "Aucune limite CPU n'est posée sur la plateforme : une saturation se traduit par de la latence, pas par du throttling.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 2,
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(node_cpu_usage_seconds_total[5m]))",
+          "legendFormat": "cœurs consommés"
+        }
+      ]
+    }
+  ],
+  "__inputs": [],
+  "__requires": []
+}

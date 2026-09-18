@@ -1,0 +1,102 @@
+# ---------------------------------------------------------------------------
+# Gatus — page de statut publique sur status.jbessa.tech.
+# Budget : 32 Mo de request, 64 Mo de limite.
+#
+# Gatus sonde depuis l'INTÉRIEUR du cluster mais par les URL publiques : il
+# traverse donc Traefik, le certificat TLS et le routage, exactement comme un
+# visiteur. Une sonde interne en ClusterIP dirait « tout va bien » alors que le
+# certificat serait expiré ou l'IngressRoute cassée.
+#
+# Limite assumée : hébergé sur le nœud qu'il surveille, il ne dira rien le jour
+# où le VPS tombe. Une surveillance externe est le complément naturel, hors
+# périmètre de ce dépôt.
+# ---------------------------------------------------------------------------
+
+deployment:
+  replicaCount: 1
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 64Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+# L'exposition passe par un IngressRoute Traefik, comme tout le reste.
+ingress:
+  enabled: false
+
+service:
+  type: ClusterIP
+  port: 8080
+
+config:
+  # Stockage en mémoire : l'historique repart de zéro à chaque redémarrage.
+  # Un volume pour trois jours de points de sonde ne vaut pas le PVC, et
+  # l'historique long terme est déjà dans VictoriaMetrics.
+  storage:
+    type: memory
+
+  metrics: true
+
+  ui:
+    title: "Statut — jbessa.tech"
+    header: "État des services"
+    description: "Sondes publiques de la plateforme, rafraîchies toutes les minutes."
+
+  endpoints:
+    - name: Site
+      group: Public
+      url: https://jbessa.tech
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 2000"
+        # Alerte avant que cert-manager n'ait échoué trop longtemps : double la
+        # règle vmalert, mais celle-ci est visible publiquement.
+        - "[CERTIFICATE_EXPIRATION] > 168h"
+
+    - name: API
+      group: Public
+      url: https://api.jbessa.tech/up
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 3000"
+        - "[CERTIFICATE_EXPIRATION] > 168h"
+
+    - name: Teleport
+      group: Interne
+      # Sonde TCP et non HTTP : Teleport multiplexe plusieurs protocoles sur le
+      # 443 et une requête HTTP ordinaire ne prouverait pas grand-chose.
+      url: "tcp://teleport.jbessa.tech:443"
+      interval: 120s
+      conditions:
+        - "[CONNECTED] == true"
+
+    - name: ArgoCD
+      group: Interne
+      url: https://argocd.jbessa.tech/healthz
+      interval: 120s
+      conditions:
+        - "[STATUS] == 200"

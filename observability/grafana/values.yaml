@@ -1,0 +1,161 @@
+# ---------------------------------------------------------------------------
+# Grafana — visualisation publique en lecture seule.
+# Budget : 180 Mo de request, 256 Mo de limite.
+# ---------------------------------------------------------------------------
+
+replicas: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 180Mi
+  limits:
+    memory: 256Mi
+
+# Aucun volume : les sources de données et les tableaux de bord sont
+# provisionnés depuis ce dépôt à chaque démarrage. Grafana n'a donc aucun état
+# à conserver, et un PVC ne ferait que permettre des modifications manuelles
+# qui disparaîtraient au redéploiement suivant — c'est-à-dire de la dérive.
+persistence:
+  enabled: false
+
+# La base SQLite interne vit dans un emptyDir. Elle ne contient que des
+# préférences d'affichage, reconstruites au démarrage.
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 472
+  runAsGroup: 472
+  fsGroup: 472
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  runAsNonRoot: true
+  # Grafana écrit sa base SQLite et ses fichiers temporaires hors volume :
+  # la racine ne peut pas être en lecture seule. La policy Kyverno
+  # correspondante ne vise que le namespace `apps`, précisément pour ce cas.
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "3000"
+  prometheus.io/path: "/metrics"
+
+serviceMonitor:
+  enabled: false
+
+# Le Job de test du chart déploie un pod supplémentaire à chaque synchronisation.
+testFramework:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Accès
+# ---------------------------------------------------------------------------
+grafana.ini:
+  server:
+    root_url: https://grafana.jbessa.tech
+  auth.anonymous:
+    # Consultation publique sans compte : c'est l'objectif, ce Grafana fait
+    # partie de ce que la plateforme donne à voir. Le rôle Viewer interdit toute
+    # modification, et les tableaux de bord sont marqués non éditables.
+    enabled: true
+    org_name: Main Org.
+    org_role: Viewer
+  auth:
+    disable_login_form: false
+  users:
+    allow_sign_up: false
+    allow_org_create: false
+    viewers_can_edit: false
+  analytics:
+    reporting_enabled: false
+    check_for_updates: false
+  security:
+    # Empêche l'intégration des tableaux de bord dans un site tiers, qui
+    # permettrait de faire passer ces données pour celles d'un autre.
+    allow_embedding: false
+    cookie_secure: true
+  log:
+    mode: console
+    level: warn
+  # L'anonyme n'a pas besoin des explorations ad hoc : restreindre limite le
+  # coût des requêtes qu'un visiteur peut déclencher sur VictoriaMetrics.
+  explore:
+    enabled: false
+  alerting:
+    enabled: false
+  unified_alerting:
+    # Les alertes sont gérées par vmalert et Alertmanager. Le moteur intégré de
+    # Grafana ferait doublon et consommerait de la mémoire pour rien.
+    enabled: false
+
+# Le mot de passe admin est généré par le chart dans un secret. Il ne sert qu'à
+# un accès de dépannage via port-forward, l'interface publique étant anonyme.
+admin:
+  existingSecret: ""
+
+# ---------------------------------------------------------------------------
+# Provisionnement
+# ---------------------------------------------------------------------------
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: VictoriaMetrics
+        # uid fixe : c'est lui que référencent les panneaux du tableau de bord
+        # JSON. Sans valeur explicite, Grafana en génère un aléatoire au premier
+        # démarrage et tous les panneaux affichent « datasource not found ».
+        uid: victoriametrics
+        type: prometheus
+        access: proxy
+        url: http://vmsingle.observability.svc.cluster.local:8428
+        isDefault: true
+        jsonData:
+          # Doit correspondre au scrape_interval de vmagent, sinon Grafana
+          # calcule des taux sur des fenêtres plus courtes que l'intervalle
+          # réel et affiche des trous.
+          timeInterval: 30s
+          httpMethod: POST
+
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: gitops
+        orgId: 1
+        folder: Plateforme
+        type: file
+        # Non éditable et non supprimable : la seule façon de modifier un
+        # tableau de bord est une pull request sur le JSON de ce dépôt.
+        disableDeletion: true
+        editable: false
+        allowUiUpdates: false
+        options:
+          path: /var/lib/grafana/dashboards/gitops
+
+# La ConfigMap est construite par kustomize à partir de
+# observability/grafana/dashboards/*.json (cf. kustomization.yaml).
+#
+# Ce mécanisme plutôt que le sidecar du chart : le sidecar surveille l'API
+# Kubernetes en permanence pour découvrir des ConfigMaps étiquetées, ce qui
+# coûte un conteneur de plus — environ 50 Mo — pour un unique tableau de bord
+# dont le nom est connu à l'avance.
+dashboardsConfigMaps:
+  gitops: grafana-dashboards
+
+sidecar:
+  dashboards:
+    enabled: false
+  datasources:
+    enabled: false
+
+# L'exposition passe par un IngressRoute Traefik, comme tout le reste.
+ingress:
+  enabled: false
+
+service:
+  type: ClusterIP
+  port: 80

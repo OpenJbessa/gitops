@@ -1,0 +1,245 @@
+# ---------------------------------------------------------------------------
+# vmalert + Alertmanager.
+# Budget : 64 Mo / 74 Mo pour vmalert (solde des 450 du trio VictoriaMetrics),
+#          80 Mo / 128 Mo pour Alertmanager.
+#
+# Alertmanager est le sous-chart embarqué de victoria-metrics-alert plutôt
+# qu'une Application distincte : les deux composants n'ont aucun sens l'un sans
+# l'autre, et les coupler évite une Application et un cycle de réconciliation.
+#
+# Les règles sont déclarées ici, dans les valeurs, et non dans un ConfigMap
+# séparé : le chart les écrit lui-même, et un ConfigMap externe imposerait de
+# maintenir la correspondance de nom à la main.
+# ---------------------------------------------------------------------------
+
+server:
+  fullnameOverride: vmalert
+  replicaCount: 1
+
+  datasource:
+    url: http://vmsingle.observability.svc.cluster.local:8428
+
+  # vmalert réécrit dans VictoriaMetrics l'état de ses règles (ALERTS,
+  # ALERTS_FOR_STATE) : sans cela, un redémarrage de vmalert réarme toutes les
+  # alertes en attente depuis zéro.
+  remoteWrite:
+    url: http://vmsingle.observability.svc.cluster.local:8428
+  remoteRead:
+    url: http://vmsingle.observability.svc.cluster.local:8428
+
+  notifier:
+    alertmanager:
+      url: http://alertmanager.observability.svc.cluster.local:9093
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 74Mi
+
+  podSecurityContext:
+    enabled: true
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    enabled: true
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+
+  # -------------------------------------------------------------------------
+  # Règles d'alerte
+  #
+  # Cinq règles, pas une de plus. Sur une plateforme à un seul opérateur, une
+  # alerte qu'on ignore est pire qu'une alerte absente : elle entraîne à
+  # ignorer les autres.
+  # -------------------------------------------------------------------------
+  config:
+    alerts:
+      groups:
+        - name: noeud
+          interval: 1m
+          rules:
+            - alert: NoeudMemoireSaturee
+              # Seuil absolu et non un ratio : joindre
+              # node_memory_working_set_bytes (kubelet /metrics/resource) à
+              # machine_memory_bytes (cAdvisor) suppose que les deux tâches de
+              # collecte portent les mêmes étiquettes, ce qui est fragile. Un
+              # VPS de 8 Go ne change pas de taille : 7 Go, c'est 87,5 %.
+              # À REVOIR si le VPS est redimensionné.
+              expr: node_memory_working_set_bytes > 7516192768
+              for: 10m
+              labels:
+                severity: critical
+              annotations:
+                summary: "Le nœud dépasse 7 Go de mémoire utilisée"
+                description: >-
+                  {{ $value | humanize1024 }}o utilisés sur 8 Go. L'éviction de
+                  pods est imminente, et elle frappera d'abord la charge la plus
+                  gourmande — PostgreSQL.
+
+        - name: charges
+          interval: 1m
+          rules:
+            - alert: PodEnCrashLoop
+              expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} > 0
+              for: 5m
+              labels:
+                severity: critical
+              annotations:
+                summary: "{{ $labels.namespace }}/{{ $labels.pod }} redémarre en boucle"
+                description: >-
+                  Conteneur {{ $labels.container }} en CrashLoopBackOff depuis
+                  5 minutes.
+
+        - name: certificats
+          interval: 5m
+          rules:
+            - alert: CertificatBientotExpire
+              # 15 jours : cert-manager renouvelle à 30 jours restants (cf.
+              # renewBefore dans certificates.yaml). Déclencher à 15 laisse une
+              # quinzaine de tentatives avant l'expiration réelle — le temps de
+              # remarquer qu'un jeton Cloudflare a été révoqué.
+              expr: (certmanager_certificate_expiration_timestamp_seconds - time()) / 86400 < 15
+              for: 1h
+              labels:
+                severity: warning
+              annotations:
+                summary: "Certificat {{ $labels.name }} expire dans moins de 15 jours"
+                description: >-
+                  Le renouvellement automatique n'a pas abouti. Vérifier le
+                  jeton Cloudflare et les journaux de cert-manager.
+
+        - name: file
+          interval: 1m
+          rules:
+            - alert: RetardStreamRedisEleve
+              # La métrique vient de KEDA, pas d'un exportateur Redis : le
+              # scaler publie déjà la valeur qu'il lit pour décider de monter en
+              # charge. Réutiliser cette série évite un redis_exporter de 24 Mo.
+              expr: keda_scaler_metrics_value{scaledObject="worker"} > 500
+              for: 10m
+              labels:
+                severity: warning
+              annotations:
+                summary: "La file accumule du retard malgré 4 workers"
+                description: >-
+                  {{ $value }} messages en attente depuis 10 minutes. Le plafond
+                  de 4 réplicas est atteint et ne peut pas être relevé sans
+                  sortir du budget mémoire.
+
+        - name: base
+          interval: 1m
+          rules:
+            - alert: PostgreSQLIndisponible
+              # `absent()` couvre le cas où le pod a totalement disparu : sans
+              # lui, une base supprimée n'émettrait aucune série, donc aucune
+              # alerte.
+              expr: cnpg_collector_up{namespace="data"} == 0 or absent(cnpg_collector_up{namespace="data"})
+              for: 2m
+              labels:
+                severity: critical
+              annotations:
+                summary: "PostgreSQL ne répond plus"
+                description: >-
+                  Instance unique, sans réplique : l'API et le worker sont hors
+                  service tant que ce pod n'est pas revenu.
+
+# ---------------------------------------------------------------------------
+# Alertmanager
+# ---------------------------------------------------------------------------
+alertmanager:
+  enabled: true
+  fullnameOverride: alertmanager
+  replicaCount: 1
+  mode: deployment
+
+  # 5 jours d'historique : au-delà, une alerte résolue n'a plus d'intérêt.
+  retention: 120h
+
+  resources:
+    requests:
+      cpu: 25m
+      memory: 80Mi
+    limits:
+      memory: 128Mi
+
+  podSecurityContext:
+    enabled: true
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    enabled: true
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9093"
+    prometheus.io/path: "/metrics"
+
+  config:
+    global:
+      resolve_timeout: 5m
+
+    route:
+      receiver: defaut
+      group_by: ["alertname", "namespace"]
+      group_wait: 30s
+      group_interval: 5m
+      # 4 heures avant de répéter : assez long pour ne pas harceler, assez
+      # court pour qu'une alerte oubliée revienne le même jour.
+      repeat_interval: 4h
+      routes:
+        - receiver: defaut
+          matchers:
+            - severity = "critical"
+          repeat_interval: 1h
+
+    receivers:
+      # DESTINATION À RENSEIGNER. En l'état, les alertes sont évaluées,
+      # groupées et visibles dans l'interface Alertmanager, mais ne partent
+      # nulle part. Décommenter l'un des deux blocs ci-dessous.
+      - name: defaut
+        # webhook_configs:
+        #   - url: <URL_WEBHOOK_DISCORD_OU_SLACK>
+        #     send_resolved: true
+        # email_configs:
+        #   - to: <ADRESSE>
+        #     from: alertes@jbessa.tech
+        #     smarthost: <HOTE_SMTP>:587
+        #     auth_username: <UTILISATEUR>
+        #     auth_password_file: /etc/alertmanager/smtp-password
+        #     send_resolved: true
+
+    inhibit_rules:
+      # Quand le nœud sature, tout tombe. Inutile de recevoir cinq alertes pour
+      # une seule cause.
+      - source_matchers:
+          - alertname = "NoeudMemoireSaturee"
+        target_matchers:
+          - severity = "warning"
+        equal: ["namespace"]

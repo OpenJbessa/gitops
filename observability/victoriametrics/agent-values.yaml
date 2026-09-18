@@ -1,0 +1,164 @@
+# ---------------------------------------------------------------------------
+# vmagent — collecte des métriques et écriture vers VictoriaMetrics.
+# Budget : 128 Mo de request, 192 Mo de limite.
+#
+# La découverte se fait par annotations de pod (prometheus.io/scrape), et non
+# par ServiceMonitor : l'opérateur Prometheus est hors périmètre, et chaque
+# composant de ce dépôt porte déjà les annotations nécessaires.
+# ---------------------------------------------------------------------------
+
+fullnameOverride: vmagent
+replicaCount: 1
+mode: deployment
+
+remoteWrite:
+  - url: http://vmsingle.observability.svc.cluster.local:8428/api/v1/write
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 192Mi
+
+extraArgs:
+  # Tampon disque réduit : en cas d'indisponibilité de VictoriaMetrics, vmagent
+  # met en file sur le disque du nœud. Sans plafond, une panne prolongée
+  # remplirait le disque partagé avec PostgreSQL.
+  remoteWrite.maxDiskUsagePerURL: "512MB"
+  memory.allowedBytes: "150MB"
+  promscrape.suppressScrapeErrors: "false"
+
+podSecurityContext:
+  enabled: true
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  enabled: true
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8429"
+  prometheus.io/path: "/metrics"
+
+# ---------------------------------------------------------------------------
+# Cibles de collecte
+# ---------------------------------------------------------------------------
+config:
+  global:
+    # 30 s et non 15 : divise par deux le volume de points stockés, pour une
+    # granularité qui reste largement suffisante sur une plateforme de cette
+    # taille. C'est le réglage qui pèse le plus sur la rétention de 15 jours.
+    scrape_interval: 30s
+    scrape_timeout: 10s
+
+  scrape_configs:
+    # -----------------------------------------------------------------------
+    # Tous les pods portant prometheus.io/scrape: "true".
+    # Couvre ArgoCD, Traefik, cert-manager, Kyverno, KEDA, Teleport, CNPG,
+    # PostgreSQL, l'API — chacun les déclare dans son propre manifeste.
+    # -----------------------------------------------------------------------
+    - job_name: kubernetes-pods
+      kubernetes_sd_configs:
+        - role: pod
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: "true"
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels:
+            [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_app_kubernetes_io_(.+)
+          replacement: $1
+        - source_labels: [__meta_kubernetes_namespace]
+          target_label: namespace
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+        # Les pods en cours de terminaison produisent des erreurs de collecte
+        # qui polluent les alertes sans rien apprendre.
+        - source_labels: [__meta_kubernetes_pod_phase]
+          action: drop
+          regex: (Succeeded|Failed)
+
+    # -----------------------------------------------------------------------
+    # Métriques du nœud, via le kubelet.
+    #
+    # Pas de node-exporter : le kubelet expose déjà, sur /metrics/resource,
+    # node_cpu_usage_seconds_total et node_memory_working_set_bytes — les deux
+    # seules séries dont le tableau de bord et l'alerte de saturation ont
+    # besoin. Un DaemonSet node-exporter coûterait 32 Mo pour des centaines de
+    # séries qu'on ne regarderait jamais.
+    # -----------------------------------------------------------------------
+    - job_name: kubelet-resource
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        # Le certificat du kubelet de K3s est signé par une autorité interne
+        # que le jeton du compte de service ne permet pas de valider.
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+        - role: node
+      relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        # Passe par le proxy du kube-apiserver plutôt que d'attaquer le port
+        # 10250 du kubelet directement : évite d'avoir à ouvrir ce port.
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/$1/proxy/metrics/resource
+
+    # cAdvisor, pour la consommation par conteneur et machine_memory_bytes.
+    - job_name: kubelet-cadvisor
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecure_skip_verify: true
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+        - role: node
+      relabel_configs:
+        - action: labelmap
+          regex: __meta_kubernetes_node_label_(.+)
+        - target_label: __address__
+          replacement: kubernetes.default.svc:443
+        - source_labels: [__meta_kubernetes_node_name]
+          regex: (.+)
+          target_label: __metrics_path__
+          replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+      metric_relabel_configs:
+        # cAdvisor produit énormément de séries par conteneur. On ne garde que
+        # celles qui alimentent le tableau de bord : le reste ferait exploser
+        # la cardinalité et donc la mémoire de VictoriaMetrics.
+        - source_labels: [__name__]
+          action: keep
+          regex: (machine_memory_bytes|container_memory_working_set_bytes|container_cpu_usage_seconds_total)
+        # Les séries sans nom de conteneur agrègent le pod entier : doublon.
+        - source_labels: [container]
+          action: drop
+          regex: ^$
+
+podDisruptionBudget:
+  enabled: false

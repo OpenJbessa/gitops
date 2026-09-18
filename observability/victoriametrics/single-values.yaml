@@ -1,0 +1,78 @@
+# ---------------------------------------------------------------------------
+# VictoriaMetrics — instance unique, stockage des séries temporelles.
+# Budget : 256 Mo de request, 384 Mo de limite (sur les 450 alloués au trio
+# VictoriaMetrics + vmagent + vmalert).
+#
+# Pourquoi VictoriaMetrics et pas Prometheus : à rétention et cardinalité
+# égales, VM tient dans environ la moitié de la mémoire. Sur un budget de
+# 450 Mo pour toute la chaîne de métriques, l'écart est décisif.
+# ---------------------------------------------------------------------------
+
+server:
+  enabled: true
+  # Nom de service prévisible : sans cela le chart produit
+  # `<release>-victoria-metrics-single-server`, que vmagent, vmalert et Grafana
+  # devraient tous référencer à l'identique.
+  fullnameOverride: vmsingle
+
+  replicaCount: 1
+
+  # 15 jours. Au-delà, la question n'est plus la mémoire mais le disque du nœud,
+  # partagé avec PostgreSQL et Teleport.
+  retentionPeriod: 15d
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 384Mi
+
+  extraArgs:
+    # Plafonne le cache de VM sous la limite du conteneur. Par défaut VM
+    # dimensionne ses caches d'après la mémoire de l'HÔTE (8 Go) et se fait
+    # tuer par l'OOM killer bien avant de les avoir remplis.
+    memory.allowedBytes: "300MB"
+    # Rejette les séries à très forte cardinalité plutôt que de gonfler
+    # indéfiniment l'index. Une étiquette mal choisie côté application ne doit
+    # pas pouvoir faire tomber la supervision.
+    maxLabelsPerTimeseries: "40"
+    search.maxUniqueTimeseries: "100000"
+    # Déduplique les points reçus à moins d'une seconde d'écart.
+    dedup.minScrapeInterval: 30s
+
+  persistentVolume:
+    enabled: true
+    storageClassName: local-path
+    size: 10Gi
+
+  podSecurityContext:
+    enabled: true
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    enabled: true
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8428"
+    prometheus.io/path: "/metrics"
+
+  service:
+    enabled: true
+    servicePort: 8428
+
+# Un seul nœud, un seul réplica : rien à protéger, et un PDB bloquerait un drain.
+podDisruptionBudget:
+  enabled: false

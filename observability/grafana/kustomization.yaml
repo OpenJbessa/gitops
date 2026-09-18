@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: observability
+
+resources:
+  - ingressroute.yaml
+
+# Le nom est référencé tel quel par `dashboardsConfigMaps` dans values.yaml :
+# un suffixe de hash casserait le montage. Contrepartie : modifier le JSON ne
+# redéploie pas Grafana tout seul. Le provisionneur de fichiers relit le
+# répertoire toutes les dix secondes, donc la mise à jour arrive quand même —
+# simplement sans redémarrage de pod.
+configMapGenerator:
+  - name: grafana-dashboards
+    files:
+      - dashboards/platform-overview.json
+
+generatorOptions:
+  disableNameSuffixHash: true

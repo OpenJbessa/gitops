@@ -1,0 +1,19 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gatus
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: gatus
+    app.kubernetes.io/part-of: observability
+    app.kubernetes.io/managed-by: argocd
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`status.jbessa.tech`)
+      services:
+        - name: gatus
+          port: 8080
+  tls: {}
