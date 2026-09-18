@@ -1,0 +1,39 @@
+# Wave 0 — le socle. Rien ne peut être déployé avant que les namespaces et leur
+# posture de sécurité existent : PSA est évalué à l'admission du pod, donc les
+# labels doivent précéder toute charge.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: namespaces
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  labels:
+    app.kubernetes.io/name: namespaces
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/OpenJbessa/gitops.git
+    targetRevision: main
+    path: platform/namespaces
+
+  destination:
+    server: https://kubernetes.default.svc
+    # Les Namespaces sont cluster-scoped ; les NetworkPolicies portent leur
+    # namespace dans le manifeste. Cette valeur n'est qu'un défaut inutilisé.
+    namespace: default
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # Nécessaire pour adopter le namespace argocd créé à la main à l'amorçage
+      # sans écraser les champs posés par le helm install.
+      - ServerSideApply=true
+  revisionHistoryLimit: 3

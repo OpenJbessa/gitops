@@ -1,0 +1,69 @@
+# Wave 3 — Teleport Community Edition, instance unique.
+#
+# Dépend de la wave 2 pour son certificat : le secret `teleport-tls` est émis
+# par cert-manager en DNS-01 et monté dans le pod proxy, qui termine lui-même
+# le TLS. Traefik ne fait que du passthrough TCP par SNI (cf. la troisième
+# source ci-dessous).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: teleport
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  labels:
+    app.kubernetes.io/name: teleport
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  sources:
+    - repoURL: https://github.com/OpenJbessa/gitops.git
+      targetRevision: main
+      ref: values
+
+    - repoURL: https://charts.releases.teleport.dev
+      chart: teleport-cluster
+      targetRevision: 18.10.0
+      helm:
+        releaseName: teleport
+        valueFiles:
+          - $values/platform/teleport/values.yaml
+
+    # IngressRouteTCP en passthrough + purge des enregistrements de sessions.
+    - repoURL: https://github.com/OpenJbessa/gitops.git
+      targetRevision: main
+      path: platform/teleport
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: teleport
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+
+  ignoreDifferences:
+    # Le PVC SQLite ne doit jamais être recréé par une resynchronisation :
+    # il contient l'intégralité de l'état Teleport (utilisateurs, certificats
+    # d'hôte, jetons). Sa taille est immuable côté Kubernetes de toute façon.
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/resources/requests/storage
+        - /status
+
+  revisionHistoryLimit: 3

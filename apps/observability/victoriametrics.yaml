@@ -1,0 +1,56 @@
+# Wave 6 — stockage des séries temporelles.
+#
+# Trois Applications distinctes pour VictoriaMetrics (single, agent, alert)
+# plutôt que le chart victoria-metrics-k8s-stack : celui-ci embarque
+# l'opérateur VictoriaMetrics, environ 200 Mo, pour gérer des CRD dont on n'a
+# besoin nulle part ici. Trois charts simples coûtent trois Applications à
+# décrire et zéro opérateur à faire tourner.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: victoriametrics
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+  labels:
+    app.kubernetes.io/name: victoriametrics
+    app.kubernetes.io/part-of: observability
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/OpenJbessa/gitops.git
+      targetRevision: main
+      ref: values
+    - repoURL: https://victoriametrics.github.io/helm-charts
+      chart: victoria-metrics-single
+      targetRevision: 0.46.0
+      helm:
+        releaseName: vmsingle
+        valueFiles:
+          - $values/observability/victoriametrics/single-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+  ignoreDifferences:
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/resources/requests/storage
+        - /status
+  revisionHistoryLimit: 3

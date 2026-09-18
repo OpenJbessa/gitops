@@ -1,0 +1,59 @@
+# Wave 1 — l'unique point d'entrée HTTP/TCP du cluster.
+#
+# Traefik a été désactivé à l'installation de K3s pour être redéployé ici, par
+# Helm, avec une configuration versionnée. Le Traefik embarqué de K3s est géré
+# par un HelmChart CRD dans kube-system, hors de portée d'ArgoCD.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traefik
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  sources:
+    - repoURL: https://github.com/OpenJbessa/gitops.git
+      targetRevision: main
+      ref: values
+
+    - repoURL: https://traefik.github.io/charts
+      chart: traefik
+      targetRevision: 41.5.0
+      helm:
+        releaseName: traefik
+        valueFiles:
+          - $values/platform/traefik/values.yaml
+
+    # TLSStore par défaut : pointe sur le certificat wildcard. Annoté en
+    # sync-wave 1 interne pour être appliqué après les CRD du chart.
+    - repoURL: https://github.com/OpenJbessa/gitops.git
+      targetRevision: main
+      path: platform/traefik
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: traefik
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+
+  revisionHistoryLimit: 3

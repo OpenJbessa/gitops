@@ -1,0 +1,54 @@
+# Wave 2 — ClusterIssuer et certificats.
+#
+# Séparé de l'Application cert-manager parce qu'un ClusterIssuer est validé par
+# le webhook de cert-manager : le soumettre avant que le webhook réponde fait
+# échouer la synchronisation. La wave 2 garantit que la wave 1 est Healthy.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager-issuers
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app.kubernetes.io/name: cert-manager-issuers
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/OpenJbessa/gitops.git
+    targetRevision: main
+    path: platform/cert-manager/issuers
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      # L'émission ACME DNS-01 dépend de la propagation DNS chez Cloudflare :
+      # quelques minutes dans le pire cas, d'où un backoff long.
+      limit: 8
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m
+
+  ignoreDifferences:
+    # cert-manager renseigne le statut d'émission et la rotation : ce sont des
+    # champs de runtime, pas de configuration.
+    - group: cert-manager.io
+      kind: Certificate
+      jsonPointers:
+        - /status
+
+  revisionHistoryLimit: 3

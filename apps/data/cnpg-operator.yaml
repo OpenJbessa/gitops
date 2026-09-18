@@ -1,0 +1,61 @@
+# Wave 4 — l'opérateur avant le cluster qu'il pilote.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnpg-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  labels:
+    app.kubernetes.io/name: cnpg-operator
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  sources:
+    - repoURL: https://github.com/OpenJbessa/gitops.git
+      targetRevision: main
+      ref: values
+
+    - repoURL: https://cloudnative-pg.github.io/charts
+      chart: cloudnative-pg
+      targetRevision: 0.29.0
+      helm:
+        releaseName: cnpg
+        valueFiles:
+          - $values/data/cnpg-operator/values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnpg-system
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # La CRD Cluster de CloudNativePG dépasse largement la limite de 262 ko
+      # de l'annotation last-applied-configuration.
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      jqPathExpressions:
+        - .webhooks[].clientConfig.caBundle
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      jqPathExpressions:
+        - .webhooks[].clientConfig.caBundle
+
+  revisionHistoryLimit: 3

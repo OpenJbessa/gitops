@@ -1,0 +1,47 @@
+# Wave 6 — page de statut publique.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gatus
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+  labels:
+    app.kubernetes.io/name: gatus
+    app.kubernetes.io/part-of: observability
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/OpenJbessa/gitops.git
+      targetRevision: main
+      ref: values
+    - repoURL: https://twin.github.io/helm-charts
+      chart: gatus
+      targetRevision: 1.5.0
+      helm:
+        releaseName: gatus
+        valueFiles:
+          - $values/observability/gatus/values.yaml
+    - repoURL: https://github.com/OpenJbessa/gitops.git
+      targetRevision: main
+      path: observability/gatus
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 3

@@ -1,0 +1,56 @@
+# Wave 7 — worker de file, piloté par KEDA.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: worker
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "7"
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/OpenJbessa/gitops.git
+    targetRevision: main
+    path: workloads/worker
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: apps
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+
+  ignoreDifferences:
+    # KEDA écrit le nombre de réplicas via le HPA qu'il pilote. Sans cette
+    # exception, ArgoCD verrait une dérive à chaque montée en charge et, avec
+    # selfHeal actif, la ramènerait immédiatement à la valeur du dépôt — ce qui
+    # annulerait l'autoscaling à chaque cycle de réconciliation.
+    - group: apps
+      kind: Deployment
+      name: worker
+      jsonPointers:
+        - /spec/replicas
+    # Le statut du ScaledObject porte la dernière valeur lue du déclencheur.
+    - group: keda.sh
+      kind: ScaledObject
+      jsonPointers:
+        - /status
+
+  revisionHistoryLimit: 3

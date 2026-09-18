@@ -1,0 +1,41 @@
+# Wave 7 — les charges applicatives, une fois la base, le cache et
+# l'observabilité en place.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: api
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "7"
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/OpenJbessa/gitops.git
+    targetRevision: main
+    path: workloads/api
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: apps
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+
+  revisionHistoryLimit: 3

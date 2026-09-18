@@ -1,0 +1,51 @@
+# Wave 1 — cert-manager avant tout le reste : Traefik, Teleport et les
+# IngressRoute dépendent de certificats qui n'existent pas encore.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  sources:
+    - repoURL: https://github.com/OpenJbessa/gitops.git
+      targetRevision: main
+      ref: values
+
+    - repoURL: https://charts.jetstack.io
+      chart: cert-manager
+      targetRevision: 1.21.2
+      helm:
+        releaseName: cert-manager
+        valueFiles:
+          - $values/platform/cert-manager/values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # Les CRD Certificate/Order/Challenge sont volumineuses.
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+
+  revisionHistoryLimit: 3

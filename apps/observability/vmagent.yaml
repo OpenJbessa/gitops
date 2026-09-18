@@ -1,0 +1,46 @@
+# Wave 6 — collecte. Découvre ses cibles par les annotations prometheus.io
+# portées par chaque composant du dépôt, plus le kubelet pour les métriques
+# du nœud.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vmagent
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+  labels:
+    app.kubernetes.io/name: vmagent
+    app.kubernetes.io/part-of: observability
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/OpenJbessa/gitops.git
+      targetRevision: main
+      ref: values
+    - repoURL: https://victoriametrics.github.io/helm-charts
+      chart: victoria-metrics-agent
+      targetRevision: 0.47.0
+      helm:
+        releaseName: vmagent
+        valueFiles:
+          - $values/observability/victoriametrics/agent-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 3

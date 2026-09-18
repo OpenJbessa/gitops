@@ -1,0 +1,52 @@
+# Wave 4 — Redis, en même temps que l'opérateur CloudNativePG : les deux sont
+# indépendants l'un de l'autre.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redis
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  # Source unique : aucun chart amont, tout est en manifests bruts.
+  source:
+    repoURL: https://github.com/OpenJbessa/gitops.git
+    targetRevision: main
+    path: data/redis
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: data
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+
+  ignoreDifferences:
+    # Le PVC est créé par le volumeClaimTemplate du StatefulSet ; sa taille est
+    # immuable et local-path ne sait pas redimensionner. Le comparer en
+    # permanence ne produirait que du bruit.
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/resources/requests/storage
+        - /status
+
+  revisionHistoryLimit: 3

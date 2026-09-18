@@ -1,0 +1,67 @@
+# Wave 5 — le cluster PostgreSQL, une fois l'opérateur Healthy.
+#
+# Cette séparation de wave n'est pas cosmétique : le Cluster est une ressource
+# personnalisée dont la CRD et le webhook de validation sont posés en wave 4.
+# Soumis trop tôt, le manifeste est rejeté par l'API.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: postgres
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/OpenJbessa/gitops.git
+    targetRevision: main
+    path: data/postgres
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: data
+
+  syncPolicy:
+    automated:
+      # prune: true sur une base de données mérite d'être dit explicitement :
+      # ce qui serait supprimé, c'est l'objet Cluster si on retirait le fichier
+      # du dépôt. CloudNativePG conserve alors les PVC par défaut, mais c'est
+      # une garantie de l'opérateur, pas d'ArgoCD. Retirer ce fichier du dépôt
+      # n'est pas une opération anodine.
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+    retry:
+      # L'initialisation d'un cluster PostgreSQL (initdb, premier démarrage,
+      # première sauvegarde WAL) prend plusieurs minutes sur un disque partagé.
+      limit: 8
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m
+
+  ignoreDifferences:
+    # L'opérateur écrit en continu dans le statut du Cluster (état de
+    # l'instance, position WAL, phase de bascule).
+    - group: postgresql.cnpg.io
+      kind: Cluster
+      jsonPointers:
+        - /status
+    # `imageName` n'est pas renseigné dans le manifeste : l'opérateur y inscrit
+    # sa valeur par défaut. Sans cette exception, l'Application resterait
+    # OutOfSync en permanence.
+    - group: postgresql.cnpg.io
+      kind: Cluster
+      jsonPointers:
+        - /spec/imageName
+
+  revisionHistoryLimit: 3
