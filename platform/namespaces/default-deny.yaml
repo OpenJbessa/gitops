@@ -1,0 +1,168 @@
+# ---------------------------------------------------------------------------
+# Posture réseau par défaut des namespaces applicatifs (`apps` et `data`).
+#
+# Principe : tout est refusé, dans les deux sens, puis on rouvre flux par flux.
+# Les autorisations propres à chaque charge (API → PostgreSQL, worker → Redis…)
+# sont décrites avec la charge concernée, pas ici — ce fichier ne contient que
+# ce qui vaut pour l'ensemble du namespace.
+#
+# Les namespaces de plateforme (traefik, cert-manager, kyverno, keda, teleport,
+# cnpg-system, observability) ne portent PAS de refus par défaut : ils hébergent
+# des webhooks appelés par le kube-apiserver et un agent de collecte qui doit
+# joindre tous les pods du cluster. Y appliquer un deny-all reviendrait à écrire
+# une liste d'exceptions équivalente à l'absence de politique.
+#
+# Prérequis : K3s doit avoir son contrôleur de NetworkPolicy actif (c'est le
+# cas par défaut via kube-router ; il est désactivé par --disable-network-policy).
+# ---------------------------------------------------------------------------
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: default-deny-all
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: data
+  labels:
+    app.kubernetes.io/name: default-deny-all
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Sans résolution DNS, un pod ne peut même pas joindre les services qu'on
+# l'autorise par ailleurs à contacter. C'est la première exception, et elle
+# s'applique à tous les pods des deux namespaces.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: allow-dns-egress
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: data
+  labels:
+    app.kubernetes.io/name: allow-dns-egress
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# vmagent vit dans `observability` et doit atteindre les endpoints /metrics de
+# toutes les charges. Sans cette règle, la moitié des tableaux de bord reste
+# vide sans qu'aucune erreur ne remonte côté application.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-scraping
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: allow-metrics-scraping
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-scraping
+  namespace: data
+  labels:
+    app.kubernetes.io/name: allow-metrics-scraping
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+---
+# CloudNativePG pilote ses instances depuis l'opérateur (bascule, sauvegarde,
+# sondes) : sans ce flux, le Cluster PostgreSQL reste bloqué à l'initialisation.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cnpg-operator
+  namespace: data
+  labels:
+    app.kubernetes.io/name: allow-cnpg-operator
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system

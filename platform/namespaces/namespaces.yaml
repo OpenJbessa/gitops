@@ -1,0 +1,177 @@
+# ---------------------------------------------------------------------------
+# Un namespace par domaine fonctionnel.
+#
+# Tous portent les labels Pod Security Admission en mode « restricted » sur les
+# trois axes (enforce, audit, warn), à une exception près — documentée plus bas.
+# `*-version: latest` fait suivre l'évolution du profil avec la version de K3s
+# plutôt que de le figer sur une release donnée.
+# ---------------------------------------------------------------------------
+
+# Le namespace argocd existe déjà : il a été créé à la main à l'amorçage.
+# Cette ressource ne fait que l'adopter pour lui poser ses labels, afin que la
+# posture de sécurité d'ArgoCD soit décrite en GitOps comme le reste.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+# EXCEPTION PSA — seul namespace en « privileged » du cluster.
+#
+# K3s expose les Services de type LoadBalancer via son ServiceLB (klipper-lb),
+# qui déploie un DaemonSet `svclb-traefik-*` DANS LE NAMESPACE DU SERVICE. Ces
+# pods utilisent des hostPort et ajoutent la capability NET_ADMIN : ils sont
+# rejetés aussi bien par « restricted » que par « baseline ». Les labeller
+# autrement revient à ne plus avoir d'entrée HTTP sur le cluster.
+#
+# Le périmètre de l'exception reste borné : seul Traefik vit ici, et le webhook
+# Kyverno exclut ce namespace pour la même raison (cf. platform/kyverno/values.yaml).
+# Traefik lui-même tourne en non-root, capabilities vidées — cf. values.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: traefik
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+    pod-security.kubernetes.io/enforce: privileged
+    # Audit et warn restent sur « restricted » : on ne veut pas taire le signal,
+    # juste ne pas bloquer. Toute dérive apparaît dans les events du namespace.
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kyverno
+  labels:
+    app.kubernetes.io/name: kyverno
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keda
+  labels:
+    app.kubernetes.io/name: keda
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: teleport
+  labels:
+    app.kubernetes.io/name: teleport
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+# L'opérateur CloudNativePG est séparé du namespace `data` où vivent les bases.
+# Raison concrète : `data` porte une NetworkPolicy de refus par défaut, qui
+# bloquerait les appels du kube-apiserver vers le webhook d'admission de
+# l'opérateur — et donc toute création de Cluster PostgreSQL.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cnpg-system
+  labels:
+    app.kubernetes.io/name: cnpg-system
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data
+  labels:
+    app.kubernetes.io/name: data
+    app.kubernetes.io/part-of: data
+    app.kubernetes.io/managed-by: argocd
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    app.kubernetes.io/name: observability
+    app.kubernetes.io/part-of: observability
+    app.kubernetes.io/managed-by: argocd
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: apps
+  labels:
+    app.kubernetes.io/name: apps
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
