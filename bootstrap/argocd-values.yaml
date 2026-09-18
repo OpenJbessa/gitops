@@ -383,11 +383,10 @@ configs:
       g, admin, role:admin
     scopes: "[groups]"
 
-  # Dépôt privé uniquement : décommenter et créer le secret correspondant à la
-  # main pendant l'amorçage (ArgoCD doit pouvoir cloner AVANT de savoir
-  # déchiffrer quoi que ce soit — cf. README, étapes manuelles résiduelles).
-  # credentialTemplates:
-  #   github:
-  #     url: https://github.com/OpenJbessa
-  #     password: <TOKEN>
-  #     username: git
+  # Aucune référence de dépôt n'est déclarée : le dépôt gitops est public, ArgoCD
+  # le clone en anonyme. C'est ce qui permet de n'avoir strictement aucun
+  # identifiant à fournir à l'amorçage — la clé age reste le seul secret
+  # qu'on injecte à la main.
+  #
+  # Corollaire : les fichiers .enc.yaml sont lisibles par tous. La confidentialité
+  # repose entièrement sur la clé privée age, jamais sur la discrétion du dépôt.

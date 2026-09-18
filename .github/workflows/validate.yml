@@ -1,0 +1,194 @@
+# ---------------------------------------------------------------------------
+# Validation du dépôt gitops.
+#
+# Ce pipeline ne déploie RIEN et ne détient aucun identifiant de cluster. Le
+# modèle reste strictement pull : ArgoCD va chercher son état, la CI se contente
+# de refuser ce qui ne tient pas debout. Ajouter un chemin de déploiement par
+# push créerait une seconde source de vérité.
+#
+# `permissions: contents: read` et aucun secret : les pull requests venant d'un
+# fork s'exécutent sans rien pouvoir exfiltrer. C'est indispensable sur un dépôt
+# public.
+# ---------------------------------------------------------------------------
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HELM_VERSION: v3.16.4
+  KUBECONFORM_VERSION: v0.6.7
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Le contrôle le plus important, et le plus rapide : il tourne en premier et
+  # sans dépendance, pour que l'échec arrive en quelques secondes.
+  # -------------------------------------------------------------------------
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Aucun secret exposé
+        run: bash scripts/check-secrets.sh
+
+  # -------------------------------------------------------------------------
+  # Reproduit le travail du repo-server ArgoCD, puis valide les manifests
+  # produits contre les schémas de l'API — CRD comprises.
+  # -------------------------------------------------------------------------
+  render:
+    name: rendu et schémas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install --quiet pyyaml
+
+      - name: Rendre toutes les Applications
+        run: python3 scripts/render.py --out "$RUNNER_TEMP/rendered"
+
+      - name: Installer kubeconform
+        run: |
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar xz -C /usr/local/bin kubeconform
+
+      - name: Valider contre les schémas de l'API
+        # Le catalogue CRDs-catalog fournit les schémas des ressources
+        # personnalisées (IngressRoute, Cluster CNPG, ScaledObject, ClusterPolicy…)
+        # que le schéma Kubernetes standard ne connaît pas.
+        run: |
+          kubeconform \
+            -strict \
+            -summary \
+            -kubernetes-version 1.32.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -ignore-missing-schemas \
+            "$RUNNER_TEMP/rendered"/*.yaml
+
+      - name: Conserver le rendu pour les autres tâches
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered
+          path: ${{ runner.temp }}/rendered
+          retention-days: 3
+
+  # -------------------------------------------------------------------------
+  # Une clé de valeurs mal placée ne produit aucune erreur Helm : elle est
+  # ignorée, et le pod part sans limite mémoire. Sur un nœud de 8 Go, c'est ce
+  # qui finit en éviction de PostgreSQL. D'où ce contrôle.
+  # -------------------------------------------------------------------------
+  budget:
+    name: budget mémoire
+    runs-on: ubuntu-latest
+    needs: render
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pyyaml
+      - uses: actions/download-artifact@v4
+        with:
+          name: rendered
+          path: ${{ runner.temp }}/rendered
+      - name: Réservation mémoire sous le plafond
+        run: python3 scripts/check-budget.py --manifests "$RUNNER_TEMP/rendered"
+
+  # -------------------------------------------------------------------------
+  # Les versions doivent rester épinglées : une plage ou un `latest` rendrait
+  # le dépôt non reproductible, et le cluster dériverait sans qu'un commit le
+  # dise.
+  # -------------------------------------------------------------------------
+  pinning:
+    name: versions épinglées
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pyyaml
+      - name: Aucune version flottante
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys, yaml
+          echec = []
+
+          # Versions de charts dans les Applications
+          for f in sorted(pathlib.Path("apps").rglob("*.yaml")):
+              for d in yaml.safe_load_all(f.read_text()):
+                  if not isinstance(d, dict) or d.get("kind") != "Application":
+                      continue
+                  spec = d["spec"]
+                  for s in spec.get("sources") or [spec.get("source", {})]:
+                      if "chart" not in s:
+                          continue
+                      v = str(s.get("targetRevision", ""))
+                      if not re.fullmatch(r"v?\d+\.\d+\.\d+", v):
+                          echec.append(f"{f}: {s['chart']} -> '{v}' n'est pas une version exacte")
+
+          # Tags d'images dans les manifests
+          for base in ("platform", "data", "workloads", "observability", "bootstrap"):
+              for f in sorted(pathlib.Path(base).rglob("*.yaml")):
+                  for n, ligne in enumerate(f.read_text().splitlines(), 1):
+                      m = re.search(r'^\s*(?:-\s+)?image:\s*["\']?([^\s"\']+)', ligne)
+                      if not m:
+                          continue
+                      ref = m.group(1)
+                      if ref.endswith(":placeholder"):   # remplacé par kustomize
+                          continue
+                      if ":" not in ref.rsplit("/", 1)[-1] or ref.endswith(":latest"):
+                          echec.append(f"{f}:{n}: image non épinglée -> {ref}")
+
+          if echec:
+              print("\n".join("  " + e for e in echec))
+              sys.exit(1)
+          print("  Toutes les versions de charts et d'images sont épinglées.")
+          PY
+
+  # -------------------------------------------------------------------------
+  # Les policies Kyverno sont le seul composant du dépôt qui peut refuser un
+  # déploiement. Une policy syntaxiquement invalide passerait inaperçue jusqu'à
+  # ce qu'elle laisse tout passer.
+  # -------------------------------------------------------------------------
+  policies:
+    name: policies kyverno
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer la CLI Kyverno
+        run: |
+          curl -fsSL https://github.com/kyverno/kyverno/releases/download/v1.13.4/kyverno-cli_v1.13.4_linux_x86_64.tar.gz \
+            | tar xz -C /usr/local/bin kyverno
+      - name: Les policies sont valides
+        run: kyverno validate platform/kyverno/policies/
+
+  # -------------------------------------------------------------------------
+  renovate:
+    name: configuration renovate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npx --yes --package renovate -- renovate-config-validator --strict

@@ -12,14 +12,15 @@ Ce dépôt reprend à partir de là.
 ## Sommaire
 
 1. [Principes](#principes)
-2. [Amorçage](#amorçage)
-3. [Carte des sync waves](#carte-des-sync-waves)
-4. [Budget mémoire](#budget-mémoire)
-5. [Secrets](#secrets)
-6. [Étapes manuelles résiduelles](#étapes-manuelles-résiduelles)
-7. [Valeurs à renseigner](#valeurs-à-renseigner)
-8. [Restauration après perte d'ArgoCD](#restauration-après-perte-dargocd)
-9. [Risques ouverts](#risques-ouverts)
+2. [Intégration continue](#intégration-continue)
+3. [Amorçage](#amorçage)
+4. [Carte des sync waves](#carte-des-sync-waves)
+5. [Budget mémoire](#budget-mémoire)
+6. [Secrets](#secrets)
+7. [Étapes manuelles résiduelles](#étapes-manuelles-résiduelles)
+8. [Valeurs à renseigner](#valeurs-à-renseigner)
+9. [Restauration après perte d'ArgoCD](#restauration-après-perte-dargocd)
+10. [Risques ouverts](#risques-ouverts)
 
 ---
 
@@ -39,12 +40,56 @@ pendant une bascule doublerait la réservation mémoire au pire moment.
 **Aucun chart vendorisé.** Les charts restent dans leurs dépôts amont. Ce dépôt
 ne contient que des fichiers de valeurs et des manifests bruts.
 
-**Aucun identifiant de cluster hors d'ici.** La CI des dépôts applicatifs ne
-parle jamais au cluster : elle construit, signe, pousse l'image, puis ouvre une
-pull request sur ce dépôt pour faire avancer un tag.
+**Aucun identifiant de cluster hors d'ici.** Aucune CI ne parle au cluster, pas
+même celle de ce dépôt. Les dépôts applicatifs construisent, signent et poussent
+leur image, puis ouvrent une pull request ici pour faire avancer un tag. Le
+modèle reste strictement *pull* : ArgoCD va chercher son état, personne ne le
+lui pousse. Le pipeline de `.github/workflows/validate.yml` ne détient donc
+aucun secret et refuse simplement ce qui ne tient pas debout.
+
+**Dépôt public.** ArgoCD le clone en anonyme, ce qui supprime le dernier
+identifiant qu'il aurait fallu fournir à l'amorçage. En contrepartie, les
+fichiers `.enc.yaml` sont lisibles par tous : la confidentialité repose
+entièrement sur la clé privée age, jamais sur la discrétion du dépôt.
 
 **Aucun secret en clair.** Tout secret est chiffré avec SOPS et age, et
 déchiffré dans le repo-server d'ArgoCD par KSOPS.
+
+---
+
+## Intégration continue
+
+`.github/workflows/validate.yml` s'exécute sur chaque pull request, sans aucun
+secret et avec `permissions: contents: read` — une pull request venant d'un fork
+ne peut donc rien exfiltrer, ce qui compte sur un dépôt public.
+
+| Tâche | Ce qu'elle attrape |
+|---|---|
+| `secrets` | Clé privée committée, `.enc.yaml` non chiffré, `Secret` en clair, placeholder oublié. Tourne en premier : sur un dépôt public, une valeur poussée est compromise définitivement. |
+| `render` | Reproduit le repo-server ArgoCD : `helm template` de chaque chart avec ses valeurs, `kustomize build` de chaque répertoire, puis validation `kubeconform` contre les schémas de l'API et des CRD. |
+| `budget` | Calcule la réservation mémoire réelle, `max(conteneurs, initContainers) × réplicas`, et échoue au-dessus de 4 600 Mio — pic d'autoscaling inclus. |
+| `pinning` | Version de chart flottante, image sans tag ou en `latest`. |
+| `policies` | `kyverno validate` sur les ClusterPolicy. |
+| `renovate` | `renovate-config-validator --strict`. |
+
+La tâche `budget` mérite une explication : **une clé de valeurs Helm mal placée
+ne produit aucune erreur**. Elle est ignorée en silence, et le pod part sans
+limite mémoire. C'est exactement ce qui est arrivé au contrôleur ApplicationSet
+d'ArgoCD et au contexte de sécurité de Kyverno pendant la construction de ce
+dépôt. Le seul contrôle fiable est de mesurer le rendu.
+
+Les trois Applications dont le rendu exige un secret SOPS (`cert-manager-issuers`,
+`postgres`, `api`) ne sont pas rendues en CI : le déchiffrement demande la clé
+age privée, qui n'a rien à faire dans un runner. Elles sont comptées à part et
+couvertes par la tâche `secrets`.
+
+Pour rejouer la validation localement avant de pousser :
+
+```bash
+bash scripts/check-secrets.sh
+python3 scripts/render.py --out /tmp/rendered
+python3 scripts/check-budget.py --manifests /tmp/rendered
+```
 
 ---
 
@@ -52,6 +97,12 @@ déchiffré dans le repo-server d'ArgoCD par KSOPS.
 
 Sept commandes, dont **un seul `kubectl apply`**. Tout le reste du cluster
 découle de celui-là.
+
+Ce `kubectl apply` ne peut pas venir d'un workflow GitHub : il faudrait déposer
+un kubeconfig dans les secrets du dépôt, ce qui contredirait le principe « aucun
+identifiant de cluster hors d'ici » et exposerait le cluster à quiconque peut
+déclencher un workflow. Un cluster où ArgoCD ne gère encore rien n'a de toute
+façon personne pour le déclencher : l'amorçage est manuel par nature.
 
 ### Prérequis sur le poste
 
