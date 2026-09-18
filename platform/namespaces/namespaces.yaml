@@ -97,6 +97,25 @@ metadata:
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/warn-version: latest
 ---
+# EXCEPTION PSA — « baseline » au lieu de « restricted ».
+#
+# Le chart teleport-cluster exécute deux Jobs de validation de configuration en
+# hooks pre-install/pre-upgrade (`teleport-auth-test`, `teleport-proxy-test`).
+# Leur conteneur porte déjà allowPrivilegeEscalation: false, capabilities drop
+# ALL et runAsNonRoot: true — mais PAS seccompProfile, et le chart n'applique
+# pas le podSecurityContext des valeurs à ces Jobs. Il leur manque donc un seul
+# champ pour satisfaire « restricted ».
+#
+# Conséquence observée au premier amorçage : le Job ne peut créer aucun pod,
+# ArgoCD attend indéfiniment l'achèvement de son hook PreSync, et l'Application
+# ne se synchronise jamais. `skipTests` ne s'applique pas — ce sont des hooks
+# d'installation, pas des tests Helm.
+#
+# Portée réelle de l'exception : les pods auth et proxy de Teleport restent
+# conformes à « restricted » grâce au contexte de sécurité posé dans
+# platform/teleport/values.yaml. Seuls les Jobs de hook profitent du relâchement.
+# audit et warn restent sur « restricted » : toute dérive reste visible dans les
+# events du namespace.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -105,7 +124,7 @@ metadata:
     app.kubernetes.io/name: teleport
     app.kubernetes.io/part-of: platform
     app.kubernetes.io/managed-by: argocd
-    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/enforce-version: latest
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/audit-version: latest

@@ -29,12 +29,14 @@ spec:
       chart: teleport-cluster
       targetRevision: 18.10.0
       helm:
-        # Le chart embarque des Jobs sous templates/tests/, destinés à
-        # `helm test`. ArgoCD les interprète comme des hooks de synchronisation
-        # et attend indéfiniment leur achèvement — sans jamais les lancer.
-        # C'est ce qui a bloqué cette Application au premier amorçage.
-        # Le drapeau est posé sur TOUTES les sources Helm du dépôt : n'importe
-        # quel chart peut en introduire à une montée de version.
+        # Posé sur toutes les sources Helm du dépôt par précaution : un chart
+        # peut introduire des Jobs sous templates/tests/ à n'importe quelle
+        # montée de version, et ArgoCD les traiterait comme des hooks bloquants.
+        #
+        # Attention, ce drapeau NE couvre PAS les Jobs `teleport-*-test` de ce
+        # chart : malgré leur nom, ce sont des hooks pre-install de validation
+        # de configuration, pas des tests. Ce qui les bloquait était le profil
+        # PSA du namespace — voir platform/namespaces/namespaces.yaml.
         skipTests: true
         releaseName: teleport
         valueFiles:
