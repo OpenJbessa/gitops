@@ -92,10 +92,18 @@ controller:
   #
   # La request reflète donc le régime permanent, qui est ce que l'ordonnanceur
   # doit réserver ; la limite couvre le pic de synchronisation.
-  # VALEUR À RESSERRER une fois la plateforme stable : relever la consommation
-  # de régime avec `kubectl top pod -n argocd` et redescendre la limite à
-  # environ 1,5 fois ce chiffre. 768 Mo est délibérément large pour sortir de
-  # la boucle d'OOM en une fois plutôt qu'en trois paliers.
+  # MESURES RELEVÉES au premier amorçage, avec 21 Applications :
+  #   régime permanent        212 Mo   (kubectl top pod -n argocd)
+  #   pic de démarrage       > 512 Mo   (OOMKill à 512, stable à 768)
+  #
+  # Un facteur trois et demi entre les deux. La limite est donc dictée par le
+  # pic, pas par le régime — d'où l'écart inhabituel avec la request.
+  # Ne pas descendre la limite sous 768 Mo sans revérifier le démarrage : c'est
+  # le seul moment où ce chiffre compte.
+  #
+  # La request pourrait être resserrée vers 256 Mo, mais seulement après
+  # plusieurs jours de fonctionnement — la mesure ci-dessus a été prise sur un
+  # cluster dont les waves 6 et 7 venaient d'être déployées.
   resources:
     requests:
       cpu: 100m
