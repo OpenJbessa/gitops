@@ -22,13 +22,13 @@ webhooks:
 resources:
   operator:
     requests:
-      cpu: 50m
+      cpu: 25m
       memory: 64Mi
     limits:
       memory: 100Mi
   metricServer:
     requests:
-      cpu: 25m
+      cpu: 15m
       memory: 40Mi
     limits:
       memory: 64Mi

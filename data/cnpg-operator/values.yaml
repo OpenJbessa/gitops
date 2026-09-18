@@ -17,7 +17,7 @@ crds:
 
 resources:
   requests:
-    cpu: 50m
+    cpu: 25m
     memory: 100Mi
   limits:
     memory: 150Mi

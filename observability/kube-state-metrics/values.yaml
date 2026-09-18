@@ -30,7 +30,7 @@ collectors:
 
 resources:
   requests:
-    cpu: 20m
+    cpu: 10m
     memory: 48Mi
   limits:
     memory: 96Mi

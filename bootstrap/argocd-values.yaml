@@ -158,7 +158,7 @@ repoServer:
   # rendus : sans lui, il en faudrait bien davantage.
   resources:
     requests:
-      cpu: 50m
+      cpu: 25m
       memory: 192Mi
     limits:
       memory: 384Mi
@@ -265,7 +265,7 @@ server:
 
   resources:
     requests:
-      cpu: 50m
+      cpu: 25m
       memory: 64Mi
     limits:
       memory: 96Mi
@@ -314,7 +314,7 @@ redis:
 
   resources:
     requests:
-      cpu: 50m
+      cpu: 25m
       memory: 64Mi
     limits:
       memory: 96Mi

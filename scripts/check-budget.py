@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vérifie que la réservation mémoire du cluster tient sous le plafond.
+"""Vérifie que les réservations mémoire ET CPU du cluster tiennent sous leurs plafonds.
 
 La contrainte structurante du projet est un nœud unique de 8 Go. Ce contrôle
 existe parce qu'une clé de valeurs mal placée ne produit AUCUNE erreur Helm :
@@ -32,11 +32,35 @@ import yaml
 
 RACINE = pathlib.Path(__file__).resolve().parent.parent
 
-# Plafond global, en Mio. Le nœud a 8 Go ; le reste va au système, au kubelet,
+# Plafond mémoire, en Mio. Le nœud a 8 Go ; le reste va au système, au kubelet,
 # à containerd et aux composants K3s (coredns, metrics-server, local-path).
 PLAFOND_MIO = 4600
 
+# Plafond CPU, en millicores. Le nœud a 2 vCPU ; le kubelet en réserve 300m
+# (system-reserved + kube-reserved), l'allocatable est donc de 1700m, dont
+# environ 200m sont pris par coredns, metrics-server et local-path-provisioner.
+#
+# Ce contrôle a été ajouté APRÈS le premier amorçage : le budget initial ne
+# portait que sur la mémoire, et le cluster s'est retrouvé à 1730m demandés pour
+# 1700m disponibles. Teleport ne pouvait plus être ordonnancé — « Insufficient
+# cpu » — alors qu'il restait 2,4 Go de mémoire libre. Un budget qui ne surveille
+# qu'une ressource ne surveille rien.
+PLAFOND_CPU_M = 1500
+
 CHARGES = ("Deployment", "StatefulSet", "DaemonSet")
+
+
+def en_milli(valeur) -> int:
+    """Millicores depuis une quantité Kubernetes ('100m', '0.5', '2')."""
+    v = str(valeur or "")
+    if not v:
+        return 0
+    if v.endswith("m"):
+        return int(v[:-1])
+    try:
+        return int(float(v) * 1000)
+    except ValueError:
+        return 0
 
 
 def en_mio(valeur) -> int:
@@ -48,21 +72,29 @@ def en_mio(valeur) -> int:
     return int(n * facteur)
 
 
-def memoire_pod(spec: dict) -> int:
+def _ressource_pod(spec: dict, cle: str, conv) -> int:
     conteneurs = sum(
-        en_mio((c.get("resources", {}).get("requests") or {}).get("memory"))
+        conv((c.get("resources", {}).get("requests") or {}).get(cle))
         for c in spec.get("containers") or []
     )
     inits = [
-        en_mio((c.get("resources", {}).get("requests") or {}).get("memory"))
+        conv((c.get("resources", {}).get("requests") or {}).get(cle))
         for c in spec.get("initContainers") or []
     ]
     return max(conteneurs, max(inits, default=0))
 
 
+def memoire_pod(spec: dict) -> int:
+    return _ressource_pod(spec, "memory", en_mio)
+
+
+def cpu_pod(spec: dict) -> int:
+    return _ressource_pod(spec, "cpu", en_milli)
+
+
 def parcourir(docs):
-    """Retourne (lignes, total, pic_supplementaire)."""
-    lignes, total, pic = [], 0, 0
+    """Retourne (lignes, total_mio, total_cpu_m)."""
+    lignes, total, total_cpu = [], 0, 0
     for d in docs:
         if not isinstance(d, dict):
             continue
@@ -72,27 +104,32 @@ def parcourir(docs):
         if kind in CHARGES:
             replicas = d["spec"].get("replicas", 1)
             if replicas == 0:
-                lignes.append((nom, 0, "0 réplica"))
+                lignes.append((nom, 0, 0, "0 réplica"))
                 continue
-            unite = memoire_pod(d["spec"]["template"]["spec"])
-            total += unite * replicas
-            note = ""
             sp = d["spec"]["template"]["spec"]
-            c = sum(en_mio((x.get("resources", {}).get("requests") or {}).get("memory"))
-                    for x in sp.get("containers") or [])
-            if unite > c:
-                note = "imposé par un initContainer"
-            lignes.append((nom, unite * replicas, note))
+            unite = memoire_pod(sp)
+            cpu = cpu_pod(sp)
+            total += unite * replicas
+            total_cpu += cpu * replicas
+
+            somme_conteneurs = sum(
+                en_mio((x.get("resources", {}).get("requests") or {}).get("memory"))
+                for x in sp.get("containers") or []
+            )
+            note = "imposé par un initContainer" if unite > somme_conteneurs else ""
+            lignes.append((nom, unite * replicas, cpu * replicas, note))
 
         # Cluster CloudNativePG : les ressources sont portées par la CR, pas
         # par un PodTemplate.
         elif kind == "Cluster" and str(d.get("apiVersion", "")).startswith("postgresql.cnpg.io"):
-            r = d["spec"].get("resources", {})
-            v = en_mio((r.get("requests") or {}).get("memory")) * d["spec"].get("instances", 1)
+            r = (d["spec"].get("resources", {}).get("requests") or {})
+            n = d["spec"].get("instances", 1)
+            v, c = en_mio(r.get("memory")) * n, en_milli(r.get("cpu")) * n
             total += v
-            lignes.append((nom, v, "cluster postgresql"))
+            total_cpu += c
+            lignes.append((nom, v, c, "cluster postgresql"))
 
-    return lignes, total, pic
+    return lignes, total, total_cpu
 
 
 def supplement_autoscaling(docs_locaux) -> tuple[int, str]:
@@ -125,12 +162,12 @@ def main() -> int:
         if f.exists():
             docs += list(yaml.safe_load_all(f.read_text()))
 
-    lignes, total, _ = parcourir(docs)
+    lignes, total, total_cpu = parcourir(docs)
 
     print(f"{len(fichiers)} fichiers rendus + {len(directs)} manifests directs\n")
-    for nom, mio, note in sorted(lignes, key=lambda x: -x[1]):
+    for nom, mio, cpu, note in sorted(lignes, key=lambda x: -x[1]):
         suffixe = f"   <- {note}" if note else ""
-        print(f"  {mio:>5} Mi   {nom}{suffixe}")
+        print(f"  {mio:>5} Mi   {cpu:>4}m   {nom}{suffixe}")
 
     scaled = list(yaml.safe_load_all(
         (RACINE / "workloads" / "worker" / "scaledobject.yaml").read_text()
@@ -141,9 +178,12 @@ def main() -> int:
     worker = [d for d in docs
               if isinstance(d, dict) and d.get("kind") == "Deployment"
               and d["metadata"]["name"] == "worker"]
-    par_replica = memoire_pod(worker[0]["spec"]["template"]["spec"]) if worker else 0
+    sp_worker = worker[0]["spec"]["template"]["spec"] if worker else None
+    par_replica = memoire_pod(sp_worker) if sp_worker else 0
+    cpu_replica = cpu_pod(sp_worker) if sp_worker else 0
     supplement = replicas_sup * par_replica
     pic = total + supplement
+    pic_cpu = total_cpu + replicas_sup * cpu_replica
 
     print()
     print(f"  Au repos : {total:>5} Mi   / {PLAFOND_MIO} Mi   marge {PLAFOND_MIO - total} Mi")
@@ -151,12 +191,25 @@ def main() -> int:
         print(f"  Au pic   : {pic:>5} Mi   / {PLAFOND_MIO} Mi   marge {PLAFOND_MIO - pic} Mi"
               f"   (+{replicas_sup} réplicas de {nom_scaled} à {par_replica} Mi)")
 
+    print()
+    print(f"  CPU au repos : {total_cpu:>5}m / {PLAFOND_CPU_M}m   marge {PLAFOND_CPU_M - total_cpu}m")
+    if replicas_sup:
+        print(f"  CPU au pic   : {pic_cpu:>5}m / {PLAFOND_CPU_M}m   marge {PLAFOND_CPU_M - pic_cpu}m")
+
+    echec = False
     if pic > PLAFOND_MIO:
-        print(f"\nÉCHEC : le pic dépasse le plafond de {pic - PLAFOND_MIO} Mi.")
+        print(f"\nÉCHEC : le pic mémoire dépasse le plafond de {pic - PLAFOND_MIO} Mi.")
         print("Soit réduire une réservation, soit abaisser maxReplicaCount du ScaledObject.")
+        echec = True
+    if pic_cpu > PLAFOND_CPU_M:
+        print(f"\nÉCHEC : le pic CPU dépasse le plafond de {pic_cpu - PLAFOND_CPU_M}m.")
+        print("Un pod non ordonnançable pour cause de CPU affiche « Insufficient cpu »,")
+        print("alors même qu'il reste de la mémoire libre.")
+        echec = True
+    if echec:
         return 1
 
-    print("\nOK : la réservation tient sous le plafond, au repos comme au pic.")
+    print("\nOK : mémoire et CPU tiennent sous leurs plafonds, au repos comme au pic.")
     return 0
 
 
