@@ -26,28 +26,27 @@ spec:
   entryPoints:
     - websecure
   routes:
-    # Deux familles de SNI doivent arriver jusqu'à Teleport, et oublier la
-    # seconde casse tout ce qui n'est pas le navigateur.
+    # Teleport multiplexe TOUS ses services sur le 443 et les distingue par le
+    # SNI. Le navigateur n'utilise que le premier ; tout client natif — tsh,
+    # Teleport Connect, kubectl — en utilise d'autres.
     #
-    # 1. `teleport.jbessa.tech` — la connexion initiale, celle du navigateur et
-    #    du premier échange de `tsh login`.
+    # Les familles observées sur ce cluster :
+    #   teleport.jbessa.tech                                    connexion initiale
+    #   kube-teleport-proxy-alpn.teleport.jbessa.tech           accès Kubernetes
+    #   <hex>.teleport.cluster.local                            routage ALPN interne
+    #     (<hex> est le nom du cluster encodé :
+    #      teleport.jbessa.tech -> 74656c65706f72742e6a62657373612e74656368)
     #
-    # 2. `<hex>.teleport.cluster.local` — le routage ALPN interne de Teleport.
-    #    Une fois authentifié, `tsh` et Teleport Connect ouvrent une seconde
-    #    connexion vers le service auth À TRAVERS le proxy, en encodant le nom
-    #    du cluster en hexadécimal dans le SNI. Pour ce cluster :
-    #      teleport.jbessa.tech -> 74656c65706f72742e6a62657373612e74656368
+    # Tout SNI non capté ici retombe sur le routeur HTTP par défaut, et Traefik
+    # répond avec le certificat wildcard. Le client échoue alors sur :
+    #   « certificate is valid for *.jbessa.tech, not <le SNI attendu> »
+    # Un wildcard ne couvrant qu'un seul niveau, il ne peut de toute façon pas
+    # valider un nom à deux niveaux comme kube-teleport-proxy-alpn.teleport.…
     #
-    # Sans la seconde règle, cette connexion ne correspond à aucun routeur TCP,
-    # retombe sur le routeur HTTP par défaut, et Traefik répond avec le
-    # certificat wildcard. Le client refuse alors :
-    #   « certificate is valid for *.jbessa.tech, not <hex>.teleport.cluster.local »
-    # Le navigateur, lui, n'utilise jamais ce chemin — d'où un web fonctionnel
-    # et des clients natifs cassés.
-    #
-    # HostSNIRegexp et non un HostSNI littéral : le nom encodé change avec le
-    # nom du cluster, et Teleport utilise ce suffixe pour plusieurs services.
-    - match: HostSNI(`teleport.jbessa.tech`) || HostSNIRegexp(`^[0-9a-f]+\.teleport\.cluster\.local$`)
+    # D'où une expression générale plutôt qu'une énumération : Teleport ajoute
+    # des préfixes de service au fil des versions, et chaque oubli se manifeste
+    # par un client cassé pendant que le navigateur continue de fonctionner.
+    - match: HostSNI(`teleport.jbessa.tech`) || HostSNIRegexp(`^.+\.teleport\.(jbessa\.tech|cluster\.local)$`)
       services:
         - name: teleport
           port: 443
