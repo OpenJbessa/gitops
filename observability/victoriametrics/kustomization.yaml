@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: observability
+
+# Les trois fichiers *-values.yaml de ce répertoire sont consommés par les
+# charts via $values : ils ne sont pas listés ici et ne sont donc pas rendus
+# comme manifests.
+generators:
+  - ./secret-generator.yaml
+
+# Alertmanager référence le secret par un nom fixe dans son montage de volume.
+generatorOptions:
+  disableNameSuffixHash: true

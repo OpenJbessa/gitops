@@ -149,3 +149,25 @@ annotations:
 
 podMonitor:
   enabled: false
+
+# ---------------------------------------------------------------------------
+# Opérateur Teleport
+#
+# Il réconcilie des ressources Kubernetes (TeleportRoleV7, TeleportUser…) vers
+# l'API Teleport. C'est ce qui rend les rôles pleinement GitOps : ArgoCD les
+# applique comme n'importe quel manifeste, et l'étape manuelle `tctl create`
+# disparaît.
+#
+# Je l'avais écarté au départ sur un argument budgétaire, à partir d'une
+# estimation. Les mesures de la mise en service l'ont invalidé : le cluster
+# consomme 1 623 Mo réels pour 4 172 Mo réservés. 64 Mo de plus sont
+# absorbables, et le coût de l'étape manuelle — un rôle décrit dans le dépôt
+# mais jamais appliqué — était plus élevé que ces 64 Mo.
+operator:
+  enabled: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 128Mi

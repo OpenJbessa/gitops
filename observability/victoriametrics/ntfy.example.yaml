@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# GABARIT — ce fichier n'est PAS déployé et ne contient aucun secret.
+#
+# Destination des alertes : un sujet ntfy.sh, poussé sur ton téléphone.
+#
+# POURQUOI L'URL EST UN SECRET
+# Sur le serveur public ntfy.sh, un sujet n'a pas de mot de passe : quiconque
+# en connaît le nom peut lire tes alertes ET en publier de fausses. Le nom du
+# sujet EST le secret. Prends-le long et aléatoire, pas « alertes-jbessa » :
+#
+#   echo "jbessa-$(openssl rand -hex 12)"
+#
+# ?template=alertmanager est un gabarit intégré à ntfy. Sans lui, la
+# notification affiche le JSON brut d'Alertmanager — illisible sur un écran de
+# téléphone à trois heures du matin. Avec lui, tu reçois un titre et un corps
+# formatés, et la distinction entre alerte déclenchée et résolue.
+#
+# Procédure :
+#   export EDITOR=nano
+#   cd observability/victoriametrics
+#   cp ntfy.example.yaml ntfy.enc.yaml
+#   sops encrypt --in-place ntfy.enc.yaml
+#   sops edit ntfy.enc.yaml
+#
+# Puis abonne-toi au sujet depuis l'application ntfy sur ton téléphone, et
+# teste avant de compter dessus :
+#   curl -d "test depuis le poste" https://ntfy.sh/<ton-sujet>
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-ntfy
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/part-of: observability
+    app.kubernetes.io/managed-by: argocd
+type: Opaque
+stringData:
+  url: https://ntfy.sh/REMPLACER_PAR_UN_SUJET_ALEATOIRE?template=alertmanager

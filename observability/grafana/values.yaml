@@ -5,10 +5,14 @@
 
 replicas: 1
 
+# 180 Mo au départ, ramenés à 128 après mesure : Grafana consomme 98 Mo en
+# régime, sans tableau de bord lourd ni exploration interactive (désactivée
+# plus bas). Les 52 Mo rendus financent l'opérateur Teleport et maintiennent la
+# plateforme sous le plafond de 4 600 Mo.
 resources:
   requests:
     cpu: 25m
-    memory: 180Mi
+    memory: 128Mi
   limits:
     memory: 256Mi
 

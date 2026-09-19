@@ -201,6 +201,20 @@ alertmanager:
     prometheus.io/port: "9093"
     prometheus.io/path: "/metrics"
 
+  # L'URL ntfy est un secret : sur le serveur public, connaître le nom du sujet
+  # suffit à lire les alertes et à en publier de fausses. Elle est donc chiffrée
+  # par SOPS (ntfy.enc.yaml) et montée en fichier, jamais écrite ici — ce dépôt
+  # est public.
+  extraVolumes:
+    - name: ntfy
+      secret:
+        secretName: alertmanager-ntfy
+
+  extraVolumeMounts:
+    - name: ntfy
+      mountPath: /etc/alertmanager/secrets
+      readOnly: true
+
   config:
     global:
       resolve_timeout: 5m
@@ -220,20 +234,18 @@ alertmanager:
           repeat_interval: 1h
 
     receivers:
-      # DESTINATION À RENSEIGNER. En l'état, les alertes sont évaluées,
-      # groupées et visibles dans l'interface Alertmanager, mais ne partent
-      # nulle part. Décommenter l'un des deux blocs ci-dessous.
       - name: defaut
-        # webhook_configs:
-        #   - url: <URL_WEBHOOK_DISCORD_OU_SLACK>
-        #     send_resolved: true
-        # email_configs:
-        #   - to: <ADRESSE>
-        #     from: alertes@jbessa.tech
-        #     smarthost: <HOTE_SMTP>:587
-        #     auth_username: <UTILISATEUR>
-        #     auth_password_file: /etc/alertmanager/smtp-password
-        #     send_resolved: true
+        webhook_configs:
+          # `url_file` et non `url` : l'URL contient le nom du sujet ntfy, qui
+          # tient lieu de mot de passe. Elle vient du secret chiffré monté
+          # ci-dessus et ne transite jamais par Git.
+          #
+          # Le gabarit `alertmanager` intégré à ntfy est activé dans cette URL
+          # (?template=alertmanager). Sans lui, la notification afficherait le
+          # JSON brut d'Alertmanager, inexploitable sur un téléphone.
+          - url_file: /etc/alertmanager/secrets/url
+            send_resolved: true
+            max_alerts: 10
 
     inhibit_rules:
       # Quand le nœud sature, tout tombe. Inutile de recevoir cinq alertes pour

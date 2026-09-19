@@ -27,6 +27,10 @@ spec:
         releaseName: vmalert
         valueFiles:
           - $values/observability/victoriametrics/alert-values.yaml
+    # Secret SOPS portant l'URL ntfy, montée en fichier par Alertmanager.
+    - repoURL: https://github.com/OpenJbessa/gitops.git
+      targetRevision: main
+      path: observability/victoriametrics
   destination:
     server: https://kubernetes.default.svc
     namespace: observability
