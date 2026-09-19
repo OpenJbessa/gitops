@@ -243,7 +243,7 @@ partir d'un seul apply.
 | **1** | `cert-manager`, `traefik` | CRD `Certificate` et webhook opérationnels ; entrée HTTP du cluster en place. |
 | **2** | `cert-manager-issuers` | `ClusterIssuer` Let's Encrypt et certificats émis. Le secret `teleport-tls` existe. |
 | **3** | `kyverno` (+ policies), `keda`, `teleport` | Contrôle d'admission actif. **À partir d'ici, tout pod doit satisfaire les policies** : les waves 4 à 7 sont les premières réellement contrôlées. |
-| **4** | `cnpg-operator`, `redis` | CRD `Cluster` et webhook CloudNativePG ; Redis prêt à accepter cache et streams. |
+| **4** | `cnpg-operator`, `redis` | CRD `Cluster` et webhook CloudNativePG ; Redis prêt à accepter cache, sessions et file de jobs. |
 | **5** | `postgres` | Base initialisée, rôle `app` créé, service `postgres-rw` résolvable. |
 | **6** | `victoriametrics`, `vmagent`, `vmalert`, `kube-state-metrics`, `grafana`, `gatus` | Collecte et alertes en place **avant** les charges applicatives : le premier démarrage de l'API est donc observé. |
 | **7** | `api`, `web`, `worker` | — |
@@ -594,7 +594,7 @@ enregistrements trouvera son volume.
 |---|---|---|
 | Tags d'images | `workloads/*/kustomization.yaml` | Premier build de la CI |
 | Destination Alertmanager | `observability/victoriametrics/alert-values.yaml` | Webhook Discord/Slack ou SMTP |
-| Stream et consumer group | `workloads/worker/scaledobject.yaml` | À aligner sur le code applicatif |
+| ~~Stream et consumer group~~ | — | **tranché** : file sur listes Laravel, `listName: queues:default` |
 
 ### Enregistrements DNS
 
@@ -654,7 +654,7 @@ dépôt :
 | Donnée | Où elle vit | Conséquence |
 |---|---|---|
 | Données PostgreSQL | PVC local-path | **Perdues.** Les sauvegardes ne sont pas activées, voir Risques ouverts. |
-| Streams et cache Redis | PVC local-path | Jobs en file perdus ; le cache se reconstruit seul. |
+| File de jobs et cache Redis | PVC local-path | Jobs en file perdus ; le cache se reconstruit seul. |
 | État Teleport (utilisateurs, certificats d'hôte) | PVC local-path, SQLite | Recréer les utilisateurs, réenrôler l'agent de l'hôte. |
 | Métriques | PVC VictoriaMetrics | 15 jours d'historique perdus. |
 

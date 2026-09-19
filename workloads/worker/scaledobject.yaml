@@ -55,20 +55,19 @@ spec:
               periodSeconds: 60
 
   triggers:
-    - type: redis-streams
+    - type: redis
       metadata:
         address: redis.data.svc.cluster.local:6379
-        # Nom du stream et du consumer group côté application. À aligner sur ce
-        # que produit le code : ce déclencheur mesure le retard d'un consumer
-        # group de stream Redis (XINFO GROUPS), pas la longueur d'une liste.
-        # Si la file reste sur le pilote `redis` par défaut de Laravel, qui
-        # s'appuie sur des listes, il faut basculer ce déclencheur en
-        # `type: redis` avec `listName` et `listLength`.
-        stream: default
-        consumerGroup: workers
-        # Au-delà de 50 messages en retard, on ajoute un réplica.
-        lagCount: "50"
+        # Clé de la liste Laravel. Le pilote `redis` de la file écrit dans
+        # `{prefix}queues:{nom}` ; REDIS_PREFIX est fixé à une chaîne vide dans
+        # le ConfigMap de l'API pour que cette clé soit prévisible. Sans ça,
+        # Laravel préfixe d'après APP_NAME et KEDA observe une clé inexistante
+        # — le worker resterait à un réplica sans le moindre message d'erreur.
+        listName: queues:default
+        # Au-delà de 50 jobs en attente, on ajoute un réplica.
+        listLength: "50"
         # En dessous de 5, la file est considérée comme vide : évite de monter
         # en charge pour trois messages.
-        activationLagCount: "5"
+        activationListLength: "5"
         enableTLS: "false"
+        databaseIndex: "0"

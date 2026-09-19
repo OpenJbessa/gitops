@@ -31,6 +31,17 @@ data:
   REDIS_PORT: "6379"
   REDIS_CLIENT: phpredis
 
+  # Préfixe VIDE, et c'est structurant : par défaut Laravel préfixe ses clés
+  # Redis d'après APP_NAME (« jbessa_database_ » par exemple). La file
+  # deviendrait alors `jbessa_database_queues:default`, alors que le
+  # ScaledObject KEDA observe `queues:default`. KEDA lirait une clé inexistante,
+  # compterait zéro, et le worker resterait à un réplica — sans la moindre
+  # erreur nulle part.
+  #
+  # Toute modification ici doit être répercutée dans
+  # workloads/worker/scaledobject.yaml.
+  REDIS_PREFIX: ""
+
   # Session, cache et file sur Redis. Pour la session et le cache c'est une
   # nécessité : le système de fichiers est en lecture seule et l'emptyDir
   # disparaît à chaque redéploiement.

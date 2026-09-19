@@ -127,20 +127,21 @@ server:
         - name: file
           interval: 1m
           rules:
-            - alert: RetardStreamRedisEleve
+            - alert: FileRedisEnRetard
               # La métrique vient de KEDA, pas d'un exportateur Redis : le
-              # scaler publie déjà la valeur qu'il lit pour décider de monter en
-              # charge. Réutiliser cette série évite un redis_exporter de 24 Mo.
+              # scaler publie déjà la longueur de liste qu'il lit pour décider
+              # de monter en charge. Réutiliser cette série évite un
+              # redis_exporter de 24 Mo.
               expr: keda_scaler_metrics_value{scaledObject="worker"} > 500
               for: 10m
               labels:
                 severity: warning
               annotations:
-                summary: "La file accumule du retard malgré 4 workers"
+                summary: "La file de jobs accumule du retard malgré 4 workers"
                 description: >-
-                  {{ $value }} messages en attente depuis 10 minutes. Le plafond
-                  de 4 réplicas est atteint et ne peut pas être relevé sans
-                  sortir du budget mémoire.
+                  {{ $value }} jobs en attente dans `queues:default` depuis
+                  10 minutes. Le plafond de 4 réplicas est atteint et ne peut
+                  pas être relevé sans sortir du budget mémoire.
 
         - name: base
           interval: 1m
