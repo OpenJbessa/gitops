@@ -45,9 +45,13 @@ spec:
       - system:masters
     kubernetes_labels:
       "*": ["*"]
+    # Pas de `api_group` ici : le champ existe dans le schéma de la CRD, mais
+    # l'API Teleport le refuse en version v7 — « API Group "*" is not supported
+    # in role version "v7". Upgrade the role version to "v8" ». Il faudrait
+    # passer le rôle en TeleportRoleV8 pour l'utiliser, ce qui n'apporte rien
+    # tant qu'on autorise tout.
     kubernetes_resources:
-      - api_group: "*"
-        kind: "*"
+      - kind: "*"
         namespace: "*"
         name: "*"
         verbs: ["*"]
