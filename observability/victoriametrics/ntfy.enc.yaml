@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# GABARIT — ce fichier n'est PAS déployé et ne contient aucun secret.
+#
+# Destination des alertes : un sujet ntfy.sh, poussé sur ton téléphone.
+#
+# POURQUOI L'URL EST UN SECRET
+# Sur le serveur public ntfy.sh, un sujet n'a pas de mot de passe : quiconque
+# en connaît le nom peut lire tes alertes ET en publier de fausses. Le nom du
+# sujet EST le secret. Prends-le long et aléatoire, pas « alertes-jbessa » :
+#
+#   echo "jbessa-$(openssl rand -hex 12)"
+#
+# ?template=alertmanager est un gabarit intégré à ntfy. Sans lui, la
+# notification affiche le JSON brut d'Alertmanager — illisible sur un écran de
+# téléphone à trois heures du matin. Avec lui, tu reçois un titre et un corps
+# formatés, et la distinction entre alerte déclenchée et résolue.
+#
+# Procédure :
+#   export EDITOR=nano
+#   cd observability/victoriametrics
+#   cp ntfy.example.yaml ntfy.enc.yaml
+#   sops encrypt --in-place ntfy.enc.yaml
+#   sops edit ntfy.enc.yaml
+#
+# Puis abonne-toi au sujet depuis l'application ntfy sur ton téléphone, et
+# teste avant de compter dessus :
+#   curl -d "test depuis le poste" https://ntfy.sh/<ton-sujet>
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+    name: alertmanager-ntfy
+    namespace: observability
+    labels:
+        app.kubernetes.io/name: alertmanager
+        app.kubernetes.io/part-of: observability
+        app.kubernetes.io/managed-by: argocd
+type: Opaque
+stringData:
+    url: ENC[AES256_GCM,data:nQdKgBXfBKn0ETaCbtt6hCODbYwRliyuGTwjddSL2pJKr9Ns/ISsW5t5eHUffT3gb2WcrH0wlxZ6WZ2zAXj7ouhjLTC1,iv:nwISfGOH8utImdoWv1vene13n9N48KFh9pQSJUH41Qc=,tag:xJkqyaEpnCMahyu1DCFJMA==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age176srtrvy8x2wrrfsxfjvg5zzg5pke3repy5ma6yhv8v24h4weenq09k93y
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBiS2lYdXFsc3NBbUM3eE9m
+            Y2hzODVkNFBtOWs4dkpQUzJQUGF2WVVNMGt3CjdzUVZvS3QvbnZ2U0djMVk2RjhY
+            OFp1RytJUkJLOXJwOFNWYll6bGZlWmcKLS0tIHZzb2NsMTdqb0RxRFdjOWhib0F5
+            THZWNkZFM1FsTlgzaVhJaDFjWjVrblEKhX8OxPz5+AXbSLR8hYaCY4T2cIc2/6Ox
+            nJDIQ8J8aUsavyctFjbKfsJqBbFeCyNztb9by1JgIq3wBnHCfi5UYA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-09-19T11:23:16Z"
+    mac: ENC[AES256_GCM,data:RFgASAhKmxTa0iioPUfUtaSjsnCD/Jfm4/66Kwae2/i5IdwYMFDRIqk96y1fT/+72zfkRJs8Opevz5NxMnxsOncAznbeMZQgd+IoRcKqmVcREQSJF8eij6dkn8x9sadYWwgkgNzIvU1/IsesZ/N86Nm12J7PJL0+5Tg+JWaCIjc=,iv:qsOVS0goVzMP8FiBFi0cZIvj84CNqjb/h868dQ9p284=,tag:ZQrztaLID2xD0GZCkFOt1A==,type:str]
+    pgp: []
+    encrypted_regex: ^(data|stringData)$
+    version: 3.9.4
