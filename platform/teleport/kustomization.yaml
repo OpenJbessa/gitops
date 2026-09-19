@@ -1,9 +1,11 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# roles.yaml est absent d'ici volontairement : ce sont des ressources Teleport
-# appliquées avec tctl, pas des objets Kubernetes (voir l'en-tête du fichier).
-# values.yaml est consommé par le chart via $values.
 resources:
   - ingressroute-tcp.yaml
   - recordings-gc.yaml
+  # Ressource Kubernetes réconciliée vers l'API Teleport par l'opérateur.
+  # Elle a remplacé roles.yaml, qui était au format `tctl` et ne pouvait être
+  # appliqué qu'à la main — le dépôt décrivait alors une posture que le cluster
+  # n'appliquait pas.
+  - role-platform-admin.yaml

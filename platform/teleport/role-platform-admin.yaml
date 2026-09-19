@@ -1,0 +1,80 @@
+# ---------------------------------------------------------------------------
+# Rôle d'administration de la plateforme.
+#
+# C'est une ressource KUBERNETES, réconciliée vers l'API Teleport par
+# l'opérateur (cf. operator.enabled dans values.yaml). ArgoCD l'applique comme
+# n'importe quel manifeste : plus aucune commande `tctl` à lancer à la main.
+#
+# Elle remplace l'ancien platform/teleport/roles.yaml, qui était au format
+# ressource Teleport et ne pouvait être appliqué que par `tctl create`. Ce
+# fichier-là décrivait une posture que le cluster n'appliquait pas — le pire
+# des états pour un dépôt qui se veut la source de vérité.
+#
+# Pour l'affecter à ton utilisateur :
+#   tsh login … && tctl users update jonathan --set-roles=platform-admin
+# ou, mieux, en déclarant aussi l'utilisateur en TeleportUser.
+# ---------------------------------------------------------------------------
+apiVersion: resources.teleport.dev/v1
+kind: TeleportRoleV7
+metadata:
+  name: platform-admin
+  namespace: teleport
+  labels:
+    app.kubernetes.io/name: teleport
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/managed-by: argocd
+spec:
+  allow:
+    # Comptes UNIX ouverts sur le nœud. `ops` est le compte non privilégié créé
+    # par le provisionnement OpenTofu ; `root` reste accessible parce qu'un nœud
+    # unique sans accès root est un nœud qu'on ne peut pas réparer.
+    #
+    # Ces noms doivent exister sur l'hôte : un login absent fait échouer
+    # `tsh ssh` sans message explicite côté Teleport.
+    logins:
+      - ops
+      - root
+
+    # Un seul nœud : le joker ne masque rien.
+    node_labels:
+      "*": ["*"]
+
+    # cluster-admin au sens Kubernetes : Teleport présente l'utilisateur au
+    # kube-apiserver comme membre de system:masters.
+    kubernetes_groups:
+      - system:masters
+    kubernetes_labels:
+      "*": ["*"]
+    kubernetes_resources:
+      - api_group: "*"
+        kind: "*"
+        namespace: "*"
+        name: "*"
+        verbs: ["*"]
+
+    # Droits sur les ressources Teleport elles-mêmes : création d'utilisateurs,
+    # de jetons d'enrôlement, lecture des enregistrements de sessions.
+    rules:
+      - resources: ["*"]
+        verbs: ["*"]
+
+  options:
+    # 8 heures : une journée de travail, pas plus. Au-delà, il faut se
+    # réauthentifier avec le second facteur. Les rôles intégrés `access` et
+    # `editor`, eux, délivrent 12 heures.
+    max_session_ttl: 8h
+
+    # Déconnecte la session dès l'expiration du certificat, sans attendre que
+    # le client le remarque.
+    disconnect_expired_cert: true
+
+    # Interdit le transfert de port et le partage d'agent SSH : deux vecteurs
+    # de rebond depuis un poste compromis vers le réseau interne. C'est la
+    # différence de posture la plus concrète avec le rôle `access`, qui les
+    # autorise tous les deux.
+    forward_agent: false
+    port_forwarding: false
+
+  # L'enregistrement des sessions n'est pas réglé ici : il est imposé au niveau
+  # du cluster par auth_service.session_recording (cf. values.yaml), ce qui
+  # empêche un rôle de s'y soustraire.
