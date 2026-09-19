@@ -582,11 +582,16 @@ et ouvre une pull request. Le dépôt applicatif ne reçoit jamais de kubeconfig
 Déjà renseignés : domaine `jbessa.tech`, organisation `OpenJbessa`, registre
 `ghcr.io/openjbessa`.
 
+### Confirmé à la mise en service
+
+Le PVC de Teleport s'appelle bien `teleport` : la valeur posée dans
+`platform/teleport/recordings-gc.yaml` est correcte, la purge des
+enregistrements trouvera son volume.
+
 ### Après le premier déploiement
 
 | Valeur | Emplacement | Comment l'obtenir |
 |---|---|---|
-| Nom du PVC Teleport | `platform/teleport/recordings-gc.yaml` | `kubectl get pvc -n teleport` |
 | Tags d'images | `workloads/*/kustomization.yaml` | Premier build de la CI |
 | Destination Alertmanager | `observability/victoriametrics/alert-values.yaml` | Webhook Discord/Slack ou SMTP |
 | Stream et consumer group | `workloads/worker/scaledobject.yaml` | À aligner sur le code applicatif |
