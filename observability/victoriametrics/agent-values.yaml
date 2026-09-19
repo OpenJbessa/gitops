@@ -161,10 +161,14 @@ config:
         - source_labels: [__name__]
           action: keep
           regex: (machine_memory_bytes|container_memory_working_set_bytes|container_cpu_usage_seconds_total)
-        # Les séries sans nom de conteneur agrègent le pod entier : doublon.
-        - source_labels: [container]
+        # Les séries container_* sans nom de conteneur agrègent le pod entier :
+        # doublon. Le filtre porte sur le NOM de la métrique en plus du libellé,
+        # sinon il emporte aussi machine_memory_bytes — qui décrit la machine et
+        # n'a donc jamais de libellé `container`. C'est ce qui vidait le panneau
+        # « mémoire du nœud » du tableau de bord.
+        - source_labels: [__name__, container]
           action: drop
-          regex: ^$
+          regex: container_.*;
 
 podDisruptionBudget:
   enabled: false
