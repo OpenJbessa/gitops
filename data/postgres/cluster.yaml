@@ -96,6 +96,17 @@ spec:
   superuserSecret:
     name: postgres-superuser
 
+  # Les annotations posées ici sont héritées par les pods de l'instance. Sans
+  # elles, vmagent ne découvre jamais PostgreSQL — la série cnpg_collector_up
+  # n'existe pas, et l'alerte PostgreSQLIndisponible se déclenche en continu sur
+  # une base parfaitement saine. C'est exactement ce qui s'est produit au
+  # premier déploiement.
+  inheritedMetadata:
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9187"
+      prometheus.io/path: "/metrics"
+
   monitoring:
     enablePodMonitor: false
     # CNPG expose ses métriques sur 9187. vmagent les récupère par annotation.

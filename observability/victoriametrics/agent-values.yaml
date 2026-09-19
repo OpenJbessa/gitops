@@ -121,14 +121,21 @@ config:
       relabel_configs:
         - action: labelmap
           regex: __meta_kubernetes_node_label_(.+)
-        # Passe par le proxy du kube-apiserver plutôt que d'attaquer le port
-        # 10250 du kubelet directement : évite d'avoir à ouvrir ce port.
-        - target_label: __address__
-          replacement: kubernetes.default.svc:443
         - source_labels: [__meta_kubernetes_node_name]
-          regex: (.+)
-          target_label: __metrics_path__
-          replacement: /api/v1/nodes/$1/proxy/metrics/resource
+          target_label: node
+        # Collecte DIRECTE du kubelet sur 10250, et non via le proxy du
+        # kube-apiserver. Le rôle `node` place déjà cette adresse dans
+        # __address__, il n'y a donc qu'à pointer le chemin.
+        #
+        # Le proxy exigerait la permission `nodes/proxy`, absente du ClusterRole
+        # du chart — d'où deux cibles en échec silencieux au premier déploiement,
+        # et une alerte de saturation mémoire aveugle. `nodes/metrics`, qui est
+        # accordé, suffit ici : le kubelet vérifie ce droit par SubjectAccessReview.
+        #
+        # C'est aussi le moindre privilège : `nodes/proxy` ouvre l'accès à
+        # d'autres points d'entrée du kubelet, ce dont un collecteur n'a pas besoin.
+        - target_label: __metrics_path__
+          replacement: /metrics/resource
 
     # cAdvisor, pour la consommation par conteneur et machine_memory_bytes.
     - job_name: kubelet-cadvisor
@@ -142,12 +149,11 @@ config:
       relabel_configs:
         - action: labelmap
           regex: __meta_kubernetes_node_label_(.+)
-        - target_label: __address__
-          replacement: kubernetes.default.svc:443
         - source_labels: [__meta_kubernetes_node_name]
-          regex: (.+)
-          target_label: __metrics_path__
-          replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+          target_label: node
+        # Même chemin direct que ci-dessus.
+        - target_label: __metrics_path__
+          replacement: /metrics/cadvisor
       metric_relabel_configs:
         # cAdvisor produit énormément de séries par conteneur. On ne garde que
         # celles qui alimentent le tableau de bord : le reste ferait exploser

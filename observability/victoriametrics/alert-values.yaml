@@ -58,7 +58,10 @@ server:
 
   podAnnotations:
     prometheus.io/scrape: "true"
-    prometheus.io/port: "8080"
+    # 8880 et non 8080 : c'est le port réel du conteneur vmalert. La valeur
+    # erronée laissait une cible en échec permanent côté vmagent, sans que rien
+    # ne le signale ailleurs.
+    prometheus.io/port: "8880"
     prometheus.io/path: "/metrics"
 
   # -------------------------------------------------------------------------
@@ -147,10 +150,12 @@ server:
           interval: 1m
           rules:
             - alert: PostgreSQLIndisponible
-              # `absent()` couvre le cas où le pod a totalement disparu : sans
-              # lui, une base supprimée n'émettrait aucune série, donc aucune
-              # alerte.
-              expr: cnpg_collector_up{namespace="data"} == 0 or absent(cnpg_collector_up{namespace="data"})
+              # `absent_over_time` sur 10 minutes, et non `absent()` : ce dernier
+              # déclenche dès qu'une seule évaluation ne voit pas la série, donc
+              # au moindre redémarrage de pod — ou, comme au premier
+              # déploiement, en permanence si la série n'a jamais existé faute
+              # d'annotation de collecte sur les pods PostgreSQL.
+              expr: cnpg_collector_up{namespace="data"} == 0 or absent_over_time(cnpg_collector_up{namespace="data"}[10m])
               for: 2m
               labels:
                 severity: critical
