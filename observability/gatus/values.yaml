@@ -67,13 +67,22 @@ config:
   endpoints:
     - name: Site
       group: Public
-      url: https://jbessa.tech
+      url: https://app.jbessa.tech
       interval: 60s
       conditions:
         - "[STATUS] == 200"
         - "[RESPONSE_TIME] < 2000"
         # Alerte avant que cert-manager n'ait échoué trop longtemps : double la
         # règle vmalert, mais celle-ci est visible publiquement.
+        - "[CERTIFICATE_EXPIRATION] > 168h"
+
+    - name: Docs
+      group: Public
+      url: https://jbessa.tech
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"
+        - "[RESPONSE_TIME] < 2000"
         - "[CERTIFICATE_EXPIRATION] > 168h"
 
     - name: API
