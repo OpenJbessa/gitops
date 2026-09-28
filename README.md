@@ -66,11 +66,26 @@ ne peut donc rien exfiltrer, ce qui compte sur un dépôt public.
 | Tâche | Ce qu'elle attrape |
 |---|---|
 | `secrets` | Clé privée committée, `.enc.yaml` non chiffré, `Secret` en clair, placeholder oublié. Tourne en premier : sur un dépôt public, une valeur poussée est compromise définitivement. |
-| `render` | Reproduit le repo-server ArgoCD : `helm template` de chaque chart avec ses valeurs, `kustomize build` de chaque répertoire, puis validation `kubeconform` contre les schémas de l'API et des CRD. |
+| `render` | Approche le repo-server ArgoCD avec les outils du runner : `helm template` de chaque chart avec ses valeurs, `kustomize build` de chaque répertoire, puis validation `kubeconform` contre les schémas de l'API et des CRD. |
+| `render-argocd` | Reproduit le repo-server avec **ses** binaires : image ArgoCD déployée, binaire ksops installé comme le fait l'initContainer, `kustomize.buildOptions` lues dans `argocd-cm`. Attrape ce que `render` ne peut pas voir — une chaîne d'outils devenue incohérente sans qu'aucun manifeste change. |
 | `budget` | Calcule la réservation mémoire réelle, `max(conteneurs, initContainers) × réplicas`, et échoue au-dessus de 4 600 Mio — pic d'autoscaling inclus. |
 | `pinning` | Version de chart flottante, image sans tag ou en `latest`. |
 | `policies` | `kyverno validate` sur les ClusterPolicy. |
 | `renovate` | `renovate-config-validator --strict`. |
+
+**`render` et `render-argocd` ne se recouvrent pas.** Le premier valide les
+manifests, le second la capacité du cluster à les produire. Un dépôt entièrement
+valide peut rester irrendable par le repo-server si ses binaires cessent d'être
+compatibles entre eux — c'est arrivé, et aucun contrôle ne l'a vu :
+[ADR 0001](docs/adr/0001-kustomize-de-ksops-incompatible-avec-helm-4.md).
+
+`render-argocd` ne détient aucun secret : il génère une clé age jetable à chaque
+exécution et fabrique des secrets factices depuis les gabarits `*.example.yaml`.
+
+> **Réglage hors dépôt à poser** : déclarer `render-argocd` comme contrôle requis
+> dans la protection de branche de `main`. `renovate.json` refuse la fusion
+> automatique des montées d'ArgoCD, de KSOPS et de sops, mais Renovate ne peut
+> pas empêcher une fusion manuelle.
 
 La tâche `budget` mérite une explication : **une clé de valeurs Helm mal placée
 ne produit aucune erreur**. Elle est ignorée en silence, et le pod part sans
@@ -89,6 +104,11 @@ Pour rejouer la validation localement avant de pousser :
 bash scripts/check-secrets.sh
 python3 scripts/render.py --out /tmp/rendered
 python3 scripts/check-budget.py --manifests /tmp/rendered
+
+# Rendu par la chaîne d'outils du repo-server. Demande docker, age et sops, et
+# tire deux images : nettement plus lent, à réserver aux changements qui
+# touchent bootstrap/argocd-values.yaml, un `helmCharts:` ou un secret SOPS.
+bash scripts/render-argocd.sh
 ```
 
 ---

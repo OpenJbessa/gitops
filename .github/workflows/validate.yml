@@ -28,6 +28,10 @@ concurrency:
 env:
   HELM_VERSION: v3.16.4
   KUBECONFORM_VERSION: v0.6.7
+  # Sert à la tâche render-argocd, qui chiffre des secrets factices pour une clé
+  # age jetable. Aligné sur la version demandée au poste par le README.
+  # renovate: datasource=github-releases depName=getsops/sops
+  SOPS_VERSION: v3.9.4
 
 jobs:
   # -------------------------------------------------------------------------
@@ -215,3 +219,49 @@ jobs:
         with:
           node-version: "22"
       - run: npx --yes --package renovate -- renovate-config-validator --strict
+
+  # -------------------------------------------------------------------------
+  # La tâche `render` ci-dessus rend avec le kustomize et le helm du runner.
+  # Celle-ci rend avec ceux du repo-server d'ArgoCD, dans son image, avec le
+  # binaire ksops installé comme le fait l'initContainer et les buildOptions
+  # lues dans la ConfigMap argocd-cm rendue.
+  #
+  # Les deux ne testent pas la même chose, et c'est la raison d'être de celle-ci :
+  # un dépôt dont tous les manifests sont valides peut rester irrendable par le
+  # cluster si les binaires du repo-server sont incompatibles entre eux. C'est
+  # arrivé — voir docs/adr/0001-kustomize-de-ksops-incompatible-avec-helm-4.md —
+  # et aucun contrôle ne l'avait vu.
+  #
+  # AUCUN SECRET. Une clé age jetable est générée à chaque exécution et des
+  # secrets factices sont fabriqués depuis les gabarits `*.example.yaml`. La
+  # vraie clé n'existe nulle part dans cette CI, qui tourne sans identifiant et
+  # sur des pull requests venant de forks.
+  #
+  # Cette tâche DOIT être un contrôle requis de la protection de branche : c'est
+  # elle qui garde les montées de version d'ArgoCD, de KSOPS et de Helm.
+  render-argocd:
+    name: rendu par le repo-server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pyyaml
+
+      - name: Installer age et sops
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq age
+          # Le tag porte le préfixe `v`, pas le nom de l'actif : v3.9.4 ->
+          # sops_3.9.4_amd64.deb. C'est la même URL que celle du README.
+          curl -fsSLo /tmp/sops.deb \
+            "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops_${SOPS_VERSION#v}_amd64.deb"
+          sudo dpkg -i /tmp/sops.deb
+
+      - name: La chaîne d'outils du repo-server rend tout le dépôt
+        run: bash scripts/render-argocd.sh
