@@ -6,6 +6,13 @@ namespace: observability
 resources:
   - ingressroute.yaml
 
+# Identifiants du compte admin. Le chart les référence par nom fixe via
+# `admin.existingSecret` : un suffixe de hash rendrait la référence invalide,
+# d'où le `disableNameSuffixHash` plus bas — déjà présent pour la ConfigMap des
+# tableaux de bord, et tout aussi indispensable ici.
+generators:
+  - ./secret-generator.yaml
+
 # Le nom est référencé tel quel par `dashboardsConfigMaps` dans values.yaml :
 # un suffixe de hash casserait le montage. Contrepartie : modifier le JSON ne
 # redéploie pas Grafana tout seul. Le provisionneur de fichiers relit le

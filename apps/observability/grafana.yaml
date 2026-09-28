@@ -1,7 +1,7 @@
-# Wave 6 — Grafana, accès anonyme en lecture.
+# Wave 6 — Grafana, accès authentifié.
 #
 # Troisième source : la ConfigMap du tableau de bord, construite par kustomize
-# à partir du JSON versionné, et l'IngressRoute.
+# à partir du JSON versionné, l'IngressRoute, et le secret SOPS du compte admin.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -49,12 +49,9 @@ spec:
         duration: 15s
         factor: 2
         maxDuration: 5m
-  ignoreDifferences:
-    # Le mot de passe admin est généré par le chart au premier déploiement et
-    # ne doit pas être régénéré à chaque synchronisation.
-    - group: ""
-      kind: Secret
-      name: grafana
-      jsonPointers:
-        - /data
+  # Plus d'ignoreDifferences sur le secret `grafana` : avec
+  # `admin.existingSecret`, le chart ne rend plus ce secret du tout — il lit
+  # `grafana-admin`, produit par KSOPS et donc stable par construction. La règle
+  # ne masquait rien d'autre, et le secret généré d'origine sera élagué à la
+  # prochaine synchronisation.
   revisionHistoryLimit: 3

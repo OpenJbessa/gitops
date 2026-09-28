@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# GABARIT — ce fichier n'est PAS déployé et ne contient aucun secret.
+#
+# Identifiants de l'unique compte Grafana. Depuis que `auth.anonymous` est
+# coupé (cf. values.yaml), c'est la seule façon d'entrer dans l'interface :
+# perdre ce mot de passe sans l'avoir sauvegardé oblige à recréer le secret et
+# à redémarrer le pod.
+#
+# POURQUOI IL N'EST PLUS GÉNÉRÉ PAR LE CHART
+# Le chart sait produire un mot de passe aléatoire, mais il ne le range nulle
+# part d'autre que dans le cluster. Tant que l'interface était publique, cet
+# identifiant ne servait qu'au dépannage et pouvait vivre là. Il est maintenant
+# la serrure elle-même, et une serrure dont la clé n'existe que derrière la
+# porte est une dépendance circulaire : plus de cluster, plus d'accès à Grafana
+# pour comprendre pourquoi.
+#
+# Le mot de passe n'est lu qu'au démarrage du pod. Le changer ici impose donc
+# un `kubectl rollout restart -n observability deployment/grafana`.
+#
+# Procédure :
+#   export EDITOR=nano
+#   cd observability/grafana
+#   cp admin.example.yaml admin.enc.yaml
+#   sops encrypt --in-place admin.enc.yaml
+#   sops edit admin.enc.yaml
+#
+# Un mot de passe correct pour ce compte :
+#   openssl rand -base64 24
+#
+# Le ranger dans le gestionnaire de mots de passe AVANT de fermer l'éditeur :
+# une fois le fichier rechiffré, `sops decrypt` reste le seul moyen de le
+# relire, et il exige la clé age.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: observability
+    app.kubernetes.io/managed-by: argocd
+type: Opaque
+stringData:
+  admin-user: admin
+  admin-password: REMPLACER_PAR_UN_MOT_DE_PASSE_ALEATOIRE

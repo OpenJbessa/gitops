@@ -536,6 +536,7 @@ kustomize et KSOPS sachent de quelle ressource il s'agit avant déchiffrement.
 | `data/postgres/credentials.enc.yaml` | Mots de passe `app` et `postgres` | 5 — base non initialisée |
 | `observability/victoriametrics/ntfy.enc.yaml` | URL du sujet ntfy des alertes | 6 — Alertmanager ne démarre pas |
 | `observability/victoriametrics/metrics-token.enc.yaml` | Jeton que vmagent présente à `/metrics` de l'API | 6 — vmagent ne démarre pas |
+| `observability/grafana/admin.enc.yaml` | Compte admin Grafana | 6 — Grafana ne démarre pas |
 | `workloads/api/secrets.enc.yaml` | `APP_KEY`, identifiants base, OAuth, `METRICS_TOKEN` | 7 — API, consommateur et générateur |
 
 **Deux duplications à surveiller.** Les secrets Kubernetes ne traversent pas les
@@ -663,6 +664,7 @@ et ouvre une pull request. Le dépôt applicatif ne reçoit jamais de kubeconfig
 | Adresse Let's Encrypt | `platform/cert-manager/issuers/clusterissuer.yaml` — **2 occurrences** | La vôtre ; sert aux avis d'expiration |
 | Jeton API Cloudflare | `cloudflare-token.enc.yaml` | Cloudflare → My Profile → API Tokens |
 | Mots de passe PostgreSQL | `data/postgres/credentials.enc.yaml` | `openssl rand -base64 32` |
+| Mot de passe admin Grafana | `observability/grafana/admin.enc.yaml` | `openssl rand -base64 24` ; à ranger dans le gestionnaire de mots de passe |
 | `APP_KEY` Laravel | `workloads/api/secrets.enc.yaml` | `php artisan key:generate --show` |
 | `DB_PASSWORD` | `workloads/api/secrets.enc.yaml` | Identique au rôle `app` ci-dessus |
 | Sujet ntfy des alertes | `observability/victoriametrics/ntfy.enc.yaml` | `echo "jbessa-$(openssl rand -hex 12)"` |

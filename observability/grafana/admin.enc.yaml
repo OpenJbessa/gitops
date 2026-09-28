@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Identifiants de l'unique compte Grafana. Chiffré : voir admin.example.yaml
+# pour la procédure et le raisonnement.
+#
+# Le mot de passe n'est lu qu'au démarrage du pod. Le changer ici impose donc :
+#   kubectl rollout restart -n observability deployment/grafana
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+    name: grafana-admin
+    namespace: observability
+    labels:
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/part-of: observability
+        app.kubernetes.io/managed-by: argocd
+type: Opaque
+stringData:
+    admin-user: ENC[AES256_GCM,data:WEKTeJ0=,iv:3OkiNa8af01P9hdiXgMoSGYtleHO9TcyewRm2yd1Hk4=,tag:ACx+wqnq0doFPfNJoDgAWQ==,type:str]
+    admin-password: ENC[AES256_GCM,data:Qv0RytmAqlLPsmuRhDUJLZcMLMfVV3a3CD+slU3tAS4=,iv:HaBKTat7zgUNiZ+Fg6Rme5r7bSfKBvTFoaEnjazO5e8=,tag:UjVCN7eEg7yOTmqy94pC0Q==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age176srtrvy8x2wrrfsxfjvg5zzg5pke3repy5ma6yhv8v24h4weenq09k93y
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBnTnNtTFkrRXllTTFOYTVD
+            Rk1TdlZGSnJ1NTJtdHIzNG8yOXQ5M1FQZHh3CjZ1QXp4dDdDb0lwQjVzei83eFhL
+            T0lDWkdRZHROUjhZamxEUTNvd09BMjgKLS0tIHIzQzNlbjdaNDVhRXNUaDUzS1U5
+            SHlOL0hVaDVXRVEyaVIvc2VsejNmR0UKIddIldXdf9eGD6unxjf9GsPDcgi3Vwto
+            SuvWb/nhmO0Nzh1Oe7vbuVOyBW8W430iHOE1sboov0rySEz1wwpfYQ==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-09-21T09:00:19Z"
+    mac: ENC[AES256_GCM,data:U02bs4mPi9ie0l9Ba54vRa+SK4BWaJibJ4YzGBscoRDXGh8QHrklNagNGmpnYNVPLphmnCylJJjhCTbJdl5/5e2BQ022GY/8tLd1VL9094OwJX06RVTb6XzwlC9ajE4OIFx2k2fdHueEfiZuCE39RwvjZB2EOcAOfGE36llzEJc=,iv:TGBE5j0SUccb6Ne8yGfTnwUmp1UbRy6lWriG6pvTk9A=,tag:Y2p+RbpFz1fz2GqC9jHQ8g==,type:str]
+    pgp: []
+    encrypted_regex: ^(data|stringData)$
+    version: 3.9.4

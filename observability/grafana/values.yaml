@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Grafana — visualisation publique en lecture seule.
+# Grafana — visualisation authentifiée.
 # Budget : 180 Mo de request, 256 Mo de limite.
 # ---------------------------------------------------------------------------
 
@@ -62,12 +62,24 @@ grafana.ini:
   server:
     root_url: https://grafana.jbessa.tech
   auth.anonymous:
-    # Consultation publique sans compte : c'est l'objectif, ce Grafana fait
-    # partie de ce que la plateforme donne à voir. Le rôle Viewer interdit toute
-    # modification, et les tableaux de bord sont marqués non éditables.
-    enabled: true
-    org_name: Main Org.
-    org_role: Viewer
+    # Coupé. Le raisonnement précédent — « le rôle Viewer interdit toute
+    # modification » — confondait lecture seule et surface réduite.
+    #
+    # Viewer porte la permission `datasources:query`, sans laquelle aucun
+    # tableau de bord ne s'afficherait. Un visiteur anonyme pouvait donc poster
+    # la PromQL de son choix sur /api/ds/query. Désactiver Explore plus bas
+    # retire le bouton de l'interface, pas l'endpoint.
+    #
+    # Et c'était pire que la lecture. Le proxy de source de données,
+    # /api/datasources/proxy/uid/victoriametrics/…, relaie vers l'API HTTP de
+    # VictoriaMetrics. Grafana y refuse les POST hors requêtes, mais laisse
+    # passer les GET — et VictoriaMetrics accepte un GET sur
+    # /api/v1/admin/tsdb/delete_series. Éprouvé sur l'image 12.3.1 avec ce
+    # grafana.ini rendu : série témoin présente, GET anonyme, réponse 204,
+    # série disparue. N'importe qui sur Internet pouvait EFFACER les métriques.
+    #
+    # Avec l'anonyme coupé, les mêmes appels répondent 401.
+    enabled: false
   auth:
     disable_login_form: false
   users:
@@ -85,8 +97,11 @@ grafana.ini:
   log:
     mode: console
     level: warn
-  # L'anonyme n'a pas besoin des explorations ad hoc : restreindre limite le
-  # coût des requêtes qu'un visiteur peut déclencher sur VictoriaMetrics.
+  # Laissé fermé, mais l'argument a changé : ce n'est plus une question de
+  # surface publique — il n'y a plus de visiteur anonyme — seulement de coût.
+  # Le tableau de bord provisionné a un profil de requêtes connu, l'exploration
+  # ad hoc non, et VictoriaMetrics partage 2 vCPU avec tout le reste. À rouvrir
+  # le jour où le besoin se présente vraiment.
   explore:
     enabled: false
   alerting:
@@ -96,10 +111,15 @@ grafana.ini:
     # Grafana ferait doublon et consommerait de la mémoire pour rien.
     enabled: false
 
-# Le mot de passe admin est généré par le chart dans un secret. Il ne sert qu'à
-# un accès de dépannage via port-forward, l'interface publique étant anonyme.
+# Le mot de passe admin vient d'un secret SOPS de ce répertoire, et non plus
+# d'une génération du chart. Tant que l'interface était anonyme, un mot de passe
+# que seul le cluster connaissait suffisait : il ne servait qu'au dépannage.
+# C'est désormais le seul identifiant d'accès, il doit donc être reproductible,
+# détenu hors du cluster, et survivre à une reconstruction du namespace.
 admin:
-  existingSecret: ""
+  existingSecret: grafana-admin
+  userKey: admin-user
+  passwordKey: admin-password
 
 # ---------------------------------------------------------------------------
 # Provisionnement
