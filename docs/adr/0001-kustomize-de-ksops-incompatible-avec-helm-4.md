@@ -124,6 +124,39 @@ sources rendues.
 `renovate.json` groupe ArgoCD, KSOPS, sops et l'image ArgoCD sous une règle qui
 interdit la fusion automatique et pose le label `render-argocd-requis`.
 
+### Un seul rendu, celui qui fait foi
+
+La première version de ce contrôle s'ajoutait à la tâche `render`, qui rendait
+avec le helm du runner (v3.16) et faisait valider *sa* sortie par `kubeconform`.
+Deux rendus coexistaient donc, et c'est le mauvais qui était validé : les
+schémas étaient vérifiés sur des manifests produits par un helm qui n'est
+déployé nulle part, pendant que le cluster utilisait helm v4.2.
+
+C'est la même erreur que celle de cet incident, un cran plus loin : valider
+autre chose que ce qui tourne. Les deux tâches ont été fusionnées sur
+`render-argocd`, qui rend les vingt Applications avec la chaîne du repo-server
+puis lance `kubeconform` sur cette sortie — laquelle alimente ensuite la tâche
+`budget`.
+
+`scripts/render.py` reste, comme chemin rapide sur le poste, et garde la
+découverte des Applications : son option `--plan` la livre en JSON à
+`render-argocd.sh`, qui l'exécute dans l'image. La logique n'est écrite qu'une
+fois, quel que soit l'exécutant.
+
+Deux angles morts disparaissent au passage :
+
+- **les trois Applications à secret SOPS** (`cert-manager-issuers`, `postgres`,
+  `api`) n'étaient rendues ni validées nulle part. Avec les secrets factices,
+  elles le sont ;
+- **le schéma de `TeleportRoleV7`**. Le catalogue CRDs-catalog décrit
+  `max_session_ttl` avec `format: duration`, soit une durée ISO 8601 (`PT8H`),
+  alors que Teleport attend une durée Go (`8h`). Le schéma est faux, pas le
+  manifeste, et lui obéir casserait le rôle. Plutôt qu'exclure le kind — ce qui
+  retirerait la validation de tout le reste de la ressource — le script récupère
+  le schéma amont et en retire les cinq `format: duration`, tous des durées
+  Teleport. Rien n'est vendorisé : le schéma corrigé est régénéré à chaque
+  exécution, et une évolution du CRD est reprise automatiquement.
+
 ## Conséquences
 
 - Une classe entière de régressions devient visible : celles où la chaîne

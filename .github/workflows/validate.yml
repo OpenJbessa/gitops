@@ -32,6 +32,10 @@ env:
   # age jetable. Aligné sur la version demandée au poste par le README.
   # renovate: datasource=github-releases depName=getsops/sops
   SOPS_VERSION: v3.9.4
+  # DOIT correspondre à l'appVersion du chart kyverno déployé. La tâche
+  # `policies` le vérifie et échoue si les deux divergent.
+  # renovate: datasource=github-releases depName=kyverno/kyverno
+  KYVERNO_VERSION: v1.19.1
 
 jobs:
   # -------------------------------------------------------------------------
@@ -47,11 +51,29 @@ jobs:
         run: bash scripts/check-secrets.sh
 
   # -------------------------------------------------------------------------
-  # Reproduit le travail du repo-server ArgoCD, puis valide les manifests
-  # produits contre les schémas de l'API — CRD comprises.
+  # UN SEUL RENDU, celui du repo-server.
+  #
+  # Il y en avait deux : une tâche `render` avec le helm du runner (v3.16) et
+  # celle-ci avec celui de l'image ArgoCD (v4.2). kubeconform validait la sortie
+  # de la première — donc des manifests qui n'étaient déployés nulle part. Les
+  # deux rendus ont été fusionnés sur celui qui fait foi.
+  #
+  # `scripts/render.py` reste le chemin rapide pour itérer sur le poste, et
+  # garde la découverte des Applications : `--plan` la livre à ce script, qui
+  # l'exécute dans l'image. La logique n'est écrite qu'une fois.
+  #
+  # AUCUN SECRET. Une clé age jetable est générée à chaque exécution et des
+  # secrets factices sont fabriqués depuis les gabarits `*.example.yaml`. La
+  # vraie clé n'existe nulle part dans cette CI, qui tourne sans identifiant et
+  # sur des pull requests venant de forks. Effet de bord utile : les trois
+  # Applications qui exigeaient un secret SOPS, et qui n'étaient donc rendues
+  # ni validées nulle part, le sont ici.
+  #
+  # Cette tâche DOIT être un contrôle requis de la protection de branche : c'est
+  # elle qui garde les montées de version d'ArgoCD, de KSOPS et de Helm.
   # -------------------------------------------------------------------------
-  render:
-    name: rendu et schémas
+  render-argocd:
+    name: rendu par le repo-server et schémas
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,32 +85,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - run: pip install --quiet pyyaml
 
-      - name: Rendre toutes les Applications
-        run: python3 scripts/render.py --out "$RUNNER_TEMP/rendered"
-
-      - name: Installer kubeconform
+      - name: Installer age, sops et kubeconform
         run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq age
+          # Le tag porte le préfixe `v`, pas le nom de l'actif : v3.9.4 ->
+          # sops_3.9.4_amd64.deb. C'est la même URL que celle du README.
+          curl -fsSLo /tmp/sops.deb \
+            "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops_${SOPS_VERSION#v}_amd64.deb"
+          sudo dpkg -i /tmp/sops.deb
           curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
-            | tar xz -C /usr/local/bin kubeconform
+            | sudo tar xz -C /usr/local/bin kubeconform
 
-      - name: Valider contre les schémas de l'API
-        # Le catalogue CRDs-catalog fournit les schémas des ressources
-        # personnalisées (IngressRoute, Cluster CNPG, ScaledObject, ClusterPolicy…)
-        # que le schéma Kubernetes standard ne connaît pas.
-        run: |
-          kubeconform \
-            -strict \
-            -summary \
-            -kubernetes-version 1.36.0 \
-            -schema-location default \
-            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            -ignore-missing-schemas \
-            "$RUNNER_TEMP/rendered"/*.yaml
+      - name: Rendre le dépôt avec la chaîne d'outils du repo-server, puis valider
+        run: bash scripts/render-argocd.sh "$RUNNER_TEMP/rendered"
 
-      - name: Conserver le rendu pour les autres tâches
+      - name: Conserver le rendu pour la tâche budget
         uses: actions/upload-artifact@v4
         with:
           name: rendered
@@ -103,7 +116,7 @@ jobs:
   budget:
     name: budget mémoire
     runs-on: ubuntu-latest
-    needs: render
+    needs: render-argocd
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -168,6 +181,28 @@ jobs:
                   if not re.fullmatch(r"v?\d+\.\d+\.\d+", v):
                       echec.append(f"{f}: {c.get('name')} -> '{v}' n'est pas une version exacte")
 
+          # Versions d'outils du workflow lui-même. La CLI Kyverno y a échappé
+          # longtemps : sa version était enterrée dans une commande curl, pas
+          # déclarée en env comme Helm ou kubeconform, et personne ne l'a vue
+          # partir à la dérive de la version déployée.
+          wf = yaml.safe_load(pathlib.Path(".github/workflows/validate.yml").read_text())
+          for cle, v in (wf.get("env") or {}).items():
+              if not cle.endswith("_VERSION"):
+                  continue
+              if not re.fullmatch(r"v?\d+\.\d+\.\d+", str(v)):
+                  echec.append(f"validate.yml: {cle} -> '{v}' n'est pas une version exacte")
+          # Et aucune version ne doit être écrite en dur dans un `run:` : c'est
+          # exactement ainsi que la CLI Kyverno a divergé.
+          for nom, job in (wf.get("jobs") or {}).items():
+              for etape in job.get("steps") or []:
+                  for n, ligne in enumerate((etape.get("run") or "").splitlines(), 1):
+                      m = re.search(r"releases/download/(v?\d+\.\d+\.\d+)/", ligne)
+                      if m:
+                          echec.append(
+                              f"validate.yml: job {nom}: version {m.group(1)} codée en dur "
+                              f"dans un run:, la déclarer en env comme les autres"
+                          )
+
           # Tags d'images dans les manifests
           for base in ("platform", "data", "workloads", "observability", "bootstrap"):
               for f in sorted(pathlib.Path(base).rglob("*.yaml")):
@@ -202,12 +237,57 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pyyaml
+
+      # La CLI doit parler la même version que le Kyverno déployé : une policy
+      # acceptée par une CLI plus récente que le cluster passerait la CI et
+      # serait refusée à l'admission. Le lien n'est pas déclaratif — on le
+      # vérifie, on ne le suppose pas.
+      - name: La CLI correspond au Kyverno déployé
+        run: |
+          CHART=$(python3 - <<'PY'
+          import pathlib, yaml
+          for d in yaml.safe_load_all(pathlib.Path("apps/platform/kyverno.yaml").read_text()):
+              if not isinstance(d, dict) or d.get("kind") != "Application":
+                  continue
+              spec = d["spec"]
+              for s in spec.get("sources") or [spec.get("source", {})]:
+                  if s.get("chart") == "kyverno":
+                      print(s["targetRevision"]); raise SystemExit
+          raise SystemExit("chart kyverno introuvable")
+          PY
+          )
+          helm repo add kyverno https://kyverno.github.io/kyverno >/dev/null
+          helm repo update kyverno >/dev/null
+          DEPLOYE=$(helm show chart kyverno/kyverno --version "$CHART" | awk '/^appVersion:/ {print $2}')
+          echo "  chart kyverno $CHART -> Kyverno $DEPLOYE"
+          echo "  KYVERNO_VERSION du workflow : $KYVERNO_VERSION"
+          if [ "$DEPLOYE" != "$KYVERNO_VERSION" ]; then
+            echo "  ÉCHEC : la CLI est épinglée à $KYVERNO_VERSION, le cluster déploie $DEPLOYE."
+            echo "  Aligner KYVERNO_VERSION dans .github/workflows/validate.yml."
+            exit 1
+          fi
+
       - name: Installer la CLI Kyverno
         run: |
-          curl -fsSL https://github.com/kyverno/kyverno/releases/download/v1.13.4/kyverno-cli_v1.13.4_linux_x86_64.tar.gz \
-            | tar xz -C /usr/local/bin kyverno
-      - name: Les policies sont valides
-        run: kyverno validate platform/kyverno/policies/
+          curl -fsSL "https://github.com/kyverno/kyverno/releases/download/${KYVERNO_VERSION}/kyverno-cli_${KYVERNO_VERSION}_linux_x86_64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin kyverno
+
+      # `kyverno validate` n'existe plus : la sous-commande a disparu de la CLI,
+      # et cette tâche échouait sur « unknown command validate » depuis assez
+      # longtemps pour qu'on l'oublie. `kyverno test` la remplace, et éprouve un
+      # comportement plutôt qu'une syntaxe — ce que la policy refuse et ce
+      # qu'elle laisse passer. Voir platform/kyverno/tests/kyverno-test.yaml
+      # pour ce qui est couvert, et ce qui ne peut pas l'être hors ligne.
+      - name: Les policies refusent et acceptent ce qu'il faut
+        run: kyverno test platform/kyverno/tests
 
   # -------------------------------------------------------------------------
   renovate:

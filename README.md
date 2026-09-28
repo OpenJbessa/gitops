@@ -66,21 +66,27 @@ ne peut donc rien exfiltrer, ce qui compte sur un dépôt public.
 | Tâche | Ce qu'elle attrape |
 |---|---|
 | `secrets` | Clé privée committée, `.enc.yaml` non chiffré, `Secret` en clair, placeholder oublié. Tourne en premier : sur un dépôt public, une valeur poussée est compromise définitivement. |
-| `render` | Approche le repo-server ArgoCD avec les outils du runner : `helm template` de chaque chart avec ses valeurs, `kustomize build` de chaque répertoire, puis validation `kubeconform` contre les schémas de l'API et des CRD. |
-| `render-argocd` | Reproduit le repo-server avec **ses** binaires : image ArgoCD déployée, binaire ksops installé comme le fait l'initContainer, `kustomize.buildOptions` lues dans `argocd-cm`. Attrape ce que `render` ne peut pas voir — une chaîne d'outils devenue incohérente sans qu'aucun manifeste change. |
+| `render-argocd` | **Le rendu qui fait foi.** Reproduit le repo-server avec *ses* binaires — image ArgoCD déployée, binaire ksops installé comme le fait l'initContainer, `kustomize.buildOptions` lues dans `argocd-cm` — rend les vingt Applications, puis valide la sortie avec `kubeconform` contre les schémas de l'API et des CRD. |
 | `budget` | Calcule la réservation mémoire réelle, `max(conteneurs, initContainers) × réplicas`, et échoue au-dessus de 4 600 Mio — pic d'autoscaling inclus. |
-| `pinning` | Version de chart flottante, image sans tag ou en `latest`. |
-| `policies` | `kyverno validate` sur les ClusterPolicy. |
+| `pinning` | Version de chart flottante, version d'outil de CI non épinglée ou codée en dur dans un `run:`, image sans tag ou en `latest`. |
+| `policies` | `kyverno test` : ce que les ClusterPolicy refusent et ce qu'elles laissent passer, avec une CLI dont la version est vérifiée égale au Kyverno déployé. |
 | `renovate` | `renovate-config-validator --strict`. |
 
-**`render` et `render-argocd` ne se recouvrent pas.** Le premier valide les
-manifests, le second la capacité du cluster à les produire. Un dépôt entièrement
-valide peut rester irrendable par le repo-server si ses binaires cessent d'être
-compatibles entre eux — c'est arrivé, et aucun contrôle ne l'a vu :
+**Il n'y a qu'un seul rendu, et c'est voulu.** Il y en avait deux : une tâche
+`render` avec le helm du runner et celle-ci avec celui de l'image ArgoCD.
+`kubeconform` validait la sortie de la première — donc des manifests qui
+n'étaient déployés nulle part, rendus par un helm v3.16 là où le cluster utilise
+un helm v4.2. Les deux ont été fusionnés sur celui qui fait foi.
+
+Un dépôt entièrement valide peut rester irrendable par le repo-server si ses
+binaires cessent d'être compatibles entre eux — c'est arrivé, et aucun contrôle
+ne l'a vu :
 [ADR 0001](docs/adr/0001-kustomize-de-ksops-incompatible-avec-helm-4.md).
 
 `render-argocd` ne détient aucun secret : il génère une clé age jetable à chaque
 exécution et fabrique des secrets factices depuis les gabarits `*.example.yaml`.
+Effet de bord utile — les trois Applications qui exigeaient un secret SOPS, et
+qui n'étaient donc **ni rendues ni validées nulle part**, le sont ici.
 
 > **Réglage hors dépôt à poser** : déclarer `render-argocd` comme contrôle requis
 > dans la protection de branche de `main`. `renovate.json` refuse la fusion
@@ -94,21 +100,30 @@ d'ArgoCD et au contexte de sécurité de Kyverno pendant la construction de ce
 dépôt. Le seul contrôle fiable est de mesurer le rendu.
 
 Les trois Applications dont le rendu exige un secret SOPS (`cert-manager-issuers`,
-`postgres`, `api`) ne sont pas rendues en CI : le déchiffrement demande la clé
-age privée, qui n'a rien à faire dans un runner. Elles sont comptées à part et
-couvertes par la tâche `secrets`.
+`postgres`, `api`) échappaient à tout rendu en CI : le déchiffrement demande la
+clé age privée, qui n'a rien à faire dans un runner. `render-argocd` les couvre
+désormais avec des secrets factices chiffrés pour une clé jetable — les valeurs
+n'ont aucune importance, seule la forme des ressources compte.
+
+Elles restent ignorées par `scripts/render.py`, qui est le chemin rapide sur le
+poste et n'a pas à réclamer la clé pour un simple aperçu.
 
 Pour rejouer la validation localement avant de pousser :
 
 ```bash
 bash scripts/check-secrets.sh
+
+# Aperçu rapide, avec le helm et le kustomize du poste. Ne dit rien de ce que le
+# cluster saura rendre : c'est l'objet du script suivant.
 python3 scripts/render.py --out /tmp/rendered
 python3 scripts/check-budget.py --manifests /tmp/rendered
 
-# Rendu par la chaîne d'outils du repo-server. Demande docker, age et sops, et
-# tire deux images : nettement plus lent, à réserver aux changements qui
-# touchent bootstrap/argocd-values.yaml, un `helmCharts:` ou un secret SOPS.
-bash scripts/render-argocd.sh
+kyverno test platform/kyverno/tests
+
+# Le rendu qui fait foi : chaîne d'outils du repo-server, les vingt
+# Applications, puis kubeconform. Demande docker, age, sops et kubeconform, et
+# tire deux images — nettement plus lent, mais c'est lui que la CI exécute.
+bash scripts/render-argocd.sh /tmp/rendu-argocd
 ```
 
 ---

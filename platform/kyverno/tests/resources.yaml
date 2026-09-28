@@ -1,0 +1,83 @@
+# ---------------------------------------------------------------------------
+# Pods d'épreuve pour `kyverno test`. Ils ne sont JAMAIS déployés : ce
+# répertoire n'est pas dans le chemin de l'Application ArgoCD, qui ne rend que
+# `platform/kyverno/policies`.
+#
+# Chacun est réduit au strict nécessaire pour éprouver une règle et une seule.
+# ---------------------------------------------------------------------------
+
+# Conforme aux trois règles : c'est la forme qu'ont les charges du namespace
+# `apps`. Sert de témoin — si ce pod venait à être refusé, la policy serait
+# devenue plus stricte que les manifests du dépôt, et la wave 7 ne démarrerait
+# plus.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-conforme
+  namespace: apps
+spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+    - name: app
+      image: ghcr.io/openjbessa/api:sha-epreuve
+      securityContext:
+        runAsNonRoot: true
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+---
+# Racine inscriptible. C'est la règle qui apporte le plus ici : les deux autres
+# doublent le profil PSA `restricted` déjà posé sur le namespace, celle-ci non.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-racine-inscriptible
+  namespace: apps
+spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+    - name: app
+      image: ghcr.io/openjbessa/api:sha-epreuve
+      securityContext:
+        runAsNonRoot: true
+        readOnlyRootFilesystem: false
+        allowPrivilegeEscalation: false
+---
+# Élévation de privilèges autorisée.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-elevation-autorisee
+  namespace: apps
+spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+    - name: app
+      image: ghcr.io/openjbessa/api:sha-epreuve
+      securityContext:
+        runAsNonRoot: true
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: true
+---
+# Image amont, hors du motif `ghcr.io/openjbessa/*`. La règle de signature ne
+# doit PAS s'y appliquer : exiger une signature des éditeurs amont demanderait
+# de maintenir une identité de confiance par éditeur. C'est la frontière que ce
+# cas verrouille — un élargissement accidentel du motif bloquerait Traefik,
+# PostgreSQL et Grafana à l'admission, c'est-à-dire tout le cluster.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-image-amont
+  namespace: apps
+spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+    - name: app
+      image: traefik:v3.6.1
+      securityContext:
+        runAsNonRoot: true
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false

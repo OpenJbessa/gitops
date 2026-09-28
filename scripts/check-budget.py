@@ -183,15 +183,31 @@ def main() -> int:
     for f in fichiers:
         docs += list(yaml.safe_load_all(f.read_text()))
 
-    # Les charges dont le rendu exige un secret SOPS ne sont pas dans la sortie
-    # de render.py : on les lit directement depuis leurs manifests.
-    directs = [
-        RACINE / "data" / "postgres" / "cluster.yaml",
-        RACINE / "workloads" / "api" / "deployment.yaml",
-    ]
-    for f in directs:
-        if f.exists():
-            docs += list(yaml.safe_load_all(f.read_text()))
+    # Les charges dont le rendu exige un secret SOPS peuvent manquer, selon qui
+    # a produit le répertoire :
+    #   - `render.py` les ignore : la clé age n'est ni sur un runner ni requise
+    #     pour un simple aperçu ;
+    #   - `render-argocd.sh` les rend, avec des secrets factices chiffrés pour
+    #     une clé jetable.
+    #
+    # On complète donc depuis les manifests bruts, mais SANS RECOMPTER ce qui
+    # est déjà là. Ajouter les deux aveuglément gonflerait le total de 1 088 Mo
+    # et ferait échouer le contrôle sur une charge fantôme.
+    deja = {
+        (d.get("kind"), (d.get("metadata") or {}).get("name"))
+        for d in docs if isinstance(d, dict)
+    }
+    directs = []
+    for f in (RACINE / "data" / "postgres" / "cluster.yaml",
+              RACINE / "workloads" / "api" / "deployment.yaml"):
+        if not f.exists():
+            continue
+        bruts = [d for d in yaml.safe_load_all(f.read_text()) if isinstance(d, dict)]
+        if any((d.get("kind"), (d.get("metadata") or {}).get("name")) in deja
+               for d in bruts):
+            continue
+        docs += bruts
+        directs.append(f)
 
     lignes, total, total_cpu = parcourir(docs)
 

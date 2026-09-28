@@ -30,8 +30,14 @@
 # `*.example.yaml` puis chiffrés pour elle. Le dépôt est public et ce job tourne
 # sur les pull requests venant de forks : il ne doit détenir aucun secret.
 #
-# Usage : bash scripts/render-argocd.sh
-# Prérequis : docker, helm, python3 + pyyaml, age, sops.
+# CE SCRIPT EST LE RENDU QUI FAIT FOI. Il rend les vingt Applications puis fait
+# valider SA sortie par kubeconform. Auparavant deux rendus coexistaient et
+# c'est le mauvais qui était validé : celui du runner, avec un helm v3.16 que
+# le cluster n'utilise pas. `scripts/render.py` reste l'aperçu rapide sur le
+# poste, et lui fournit le plan de rendu par `--plan`.
+#
+# Usage : bash scripts/render-argocd.sh [répertoire de sortie]
+# Prérequis : docker, helm, python3 + pyyaml, age, sops, kubeconform.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -39,9 +45,18 @@ RACINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TRAVAIL="$(mktemp -d)"
 VOL_REPO="render-argocd-repo-$$"
 VOL_TOOLS="render-argocd-tools-$$"
+VOL_OUT="render-argocd-out-$$"
+
+# Où atterrissent les manifests rendus. La CI passe un chemin qu'elle archive
+# ensuite pour la tâche budget ; en local, un répertoire jetable suffit.
+SORTIE="${1:-$TRAVAIL/rendu}"
+
+# Version d'API contre laquelle valider. Celle du cluster, lue dans le README
+# serait fragile : elle est posée ici et mentionnée dans le message d'aide.
+VERSION_K8S="${VERSION_K8S:-1.36.0}"
 
 nettoyer() {
-  docker volume rm -f "$VOL_REPO" "$VOL_TOOLS" >/dev/null 2>&1 || true
+  docker volume rm -f "$VOL_REPO" "$VOL_TOOLS" "$VOL_OUT" >/dev/null 2>&1 || true
   rm -rf "$TRAVAIL"
 }
 trap nettoyer EXIT
@@ -176,40 +191,77 @@ docker run --rm --user 0:0 -v "$VOL_TOOLS:/custom-tools" \
   "${INSTALL_ARGS[@]}" /custom-tools
 
 echo
-echo "── 4. Rendu de chaque source kustomize, dans l'image du repo-server"
+echo "── 4. Rendu de TOUTES les Applications, dans l'image du repo-server"
 
 docker volume create "$VOL_REPO" >/dev/null
 cp "$TRAVAIL/keys.txt" "$TRAVAIL/repo/.ci-age-key"
+
+# Le plan vient de render.py : Applications, sources, fichiers de valeurs et
+# préfixe $values n'ont qu'une seule implémentation, quel que soit l'exécutant.
+# Ici on ne fait que le traduire en commandes shell — l'image ArgoCD n'embarque
+# ni python ni jq, elle ne pourrait pas lire le JSON elle-même.
+python3 "$RACINE/scripts/render.py" --plan > "$TRAVAIL/plan.json"
+python3 - "$TRAVAIL/plan.json" > "$TRAVAIL/repo/.ci-render.sh" <<'PY'
+import hashlib, json, shlex, sys
+
+plan = json.load(open(sys.argv[1]))
+lignes = ["set -u", "mkdir -p /out", "echec=0"]
+
+# Un dépôt Helm par URL, nommé par un hash : illisible, mais sans collision avec
+# ce que l'image pourrait déjà connaître.
+depots = {}
+for app in plan:
+    for e in app["etapes"]:
+        if e["type"] == "helm" and e["repo"] not in depots:
+            depots[e["repo"]] = "r" + hashlib.sha1(e["repo"].encode()).hexdigest()[:10]
+for url, nom in sorted(depots.items(), key=lambda kv: kv[1]):
+    lignes.append(f"helm repo add {nom} {shlex.quote(url)} >/dev/null")
+if depots:
+    lignes.append("helm repo update >/dev/null")
+
+for app in plan:
+    nom = app["nom"]
+    cmds = []
+    for e in app["etapes"]:
+        if e["type"] == "helm":
+            c = ["helm", "template", e["release"],
+                 f"{depots[e['repo']]}/{e['chart']}",
+                 "--version", e["version"], "--namespace", e["namespace"]]
+            if e["skipTests"]:
+                c.append("--skip-tests")
+            for v in e["valeurs"]:
+                c += ["-f", f"/repo/{v}"]
+        else:
+            c = ["kustomize", "build"] + shlex.split("$BUILD_OPTIONS") + [f"/repo/{e['chemin']}"]
+        cmds.append(" ".join(shlex.quote(x) if x != "$BUILD_OPTIONS" else x for x in c))
+    corps = " ; echo '---' ; ".join(cmds)
+    lignes += [
+        f"if {{ {corps} ; }} > /out/{nom}.yaml 2>/tmp/err.txt; then",
+        f'  printf "  %-24s OK  (%s documents)\\n" {nom} "$(grep -c \'^apiVersion:\' /out/{nom}.yaml || true)"',
+        "else",
+        f'  printf "  %-24s ÉCHEC\\n" {nom}',
+        '  sed "s/^/      /" /tmp/err.txt | head -6',
+        "  echec=1",
+        "fi",
+    ]
+lignes.append("exit $echec")
+print("\n".join(lignes))
+PY
+
 tar c -C "$TRAVAIL/repo" . | docker run --rm -i -v "$VOL_REPO:/repo" busybox tar x -C /repo
 
-CHEMINS="$(python3 - "$RACINE" <<'PY'
-import pathlib, sys, yaml
-racine = pathlib.Path(sys.argv[1])
-vus = []
-for f in sorted((racine / "apps").rglob("*.yaml")):
-    for d in yaml.safe_load_all(f.read_text()):
-        if not isinstance(d, dict) or d.get("kind") != "Application":
-            continue
-        spec = d["spec"]
-        for s in spec.get("sources") or ([spec["source"]] if "source" in spec else []):
-            p = s.get("path")
-            if p and p not in vus:
-                vus.append(p)
-print("\n".join(sorted(vus)))
-PY
-)"
-
 # HOME=/ et la clé sous /.config/sops/age : c'est le chemin de montage posé par
-# bootstrap/argocd-values.yaml. On teste la convention en même temps que le rendu.
+# bootstrap/argocd-values.yaml. On éprouve la convention en même temps que le rendu.
 #
 # Le kustomize monté est celui de KSOPS ou celui de l'image, selon ce que disent
 # les values — voir REMPLACE_KUSTOMIZE plus haut.
+docker volume create "$VOL_OUT" >/dev/null
 docker run --rm --user 0:0 \
   -v "$VOL_TOOLS:/custom-tools" \
   -v "$VOL_REPO:/repo" \
+  -v "$VOL_OUT:/out" \
   -e "BUILD_OPTIONS=$BUILD_OPTIONS" \
   -e "REMPLACE_KUSTOMIZE=$REMPLACE_KUSTOMIZE" \
-  -e "CHEMINS=$CHEMINS" \
   --entrypoint sh "$IMAGE_ARGOCD" -c '
     set -e
     cp /custom-tools/ksops /usr/local/bin/ksops
@@ -221,18 +273,71 @@ docker run --rm --user 0:0 \
     echo "  kustomize : $(kustomize version)"
     echo "  helm      : $(helm version --short)"
     echo
-    echec=0
-    for p in $CHEMINS; do
-      if kustomize build $BUILD_OPTIONS "/repo/$p" > /tmp/out.yaml 2>/tmp/err.txt; then
-        printf "  %-34s OK  (%s documents)\n" "$p" "$(grep -c "^apiVersion:" /tmp/out.yaml || true)"
-      else
-        printf "  %-34s ÉCHEC\n" "$p"
-        sed "s/^/      /" /tmp/err.txt | head -6
-        echec=1
-      fi
-    done
-    exit $echec
-  ' 2>&1
+    sh /repo/.ci-render.sh
+  '
+
+# Sortir les manifests du volume /out pour kubeconform ci-dessous et, en CI,
+# pour la tâche budget.
+mkdir -p "$SORTIE"
+docker run --rm -v "$VOL_OUT:/out" busybox tar c -C /out . | tar x -C "$SORTIE"
+echo "  manifests écrits dans $SORTIE"
 
 echo
-echo "RÉSULTAT : la chaîne d'outils du repo-server rend toutes les sources."
+echo "── 5. Validation des schémas, sur CE rendu"
+
+# Le point de tout ceci : kubeconform valide ce que le repo-server produit, avec
+# SON helm et SON kustomize, et non ce que produirait la boîte à outils du
+# runner. Les deux divergeaient — helm v3.16 côté CI, helm v4 dans l'image — et
+# la validation portait donc sur des manifests qui n'étaient déployés nulle part.
+
+# Le catalogue CRDs-catalog décrit `max_session_ttl` d'un TeleportRoleV7 avec
+# `format: duration`, c'est-à-dire une durée ISO 8601 — « PT8H ». Teleport
+# attend une durée Go : « 8h ». Le schéma est donc faux, pas le manifeste, et y
+# obéir casserait le rôle.
+#
+# Plutôt qu'exclure le kind — ce qui retirerait aussi la validation de tout le
+# reste de la ressource — on récupère le schéma amont et on en retire le SEUL
+# mot-clé fautif. Il y en a cinq, tous des durées Teleport. Le schéma corrigé
+# est régénéré à chaque exécution : rien n'est vendorisé, et une évolution du
+# CRD est reprise automatiquement.
+SCHEMAS="$TRAVAIL/schemas/resources.teleport.dev"
+mkdir -p "$SCHEMAS"
+python3 - "$SCHEMAS" <<'PY'
+import json, pathlib, sys, urllib.request
+
+URL = ("https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/"
+       "resources.teleport.dev/teleportrolev7_v1.json")
+schema = json.loads(urllib.request.urlopen(URL, timeout=30).read())
+
+retires = 0
+def nettoyer(o):
+    global retires
+    if isinstance(o, dict):
+        if o.get("format") == "duration":
+            del o["format"]
+            retires += 1
+        for v in o.values():
+            nettoyer(v)
+    elif isinstance(o, list):
+        for v in o:
+            nettoyer(v)
+
+nettoyer(schema)
+cible = pathlib.Path(sys.argv[1]) / "teleportrolev7_v1.json"
+cible.write_text(json.dumps(schema))
+print(f"  schéma TeleportRoleV7 corrigé : {retires} `format: duration` retirés")
+PY
+
+kubeconform \
+  -strict \
+  -summary \
+  -kubernetes-version "$VERSION_K8S" \
+  -schema-location default \
+  -schema-location "$TRAVAIL/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+  -ignore-missing-schemas \
+  "$SORTIE"/*.yaml
+
+echo
+echo "RÉSULTAT : la chaîne d'outils du repo-server rend tout le dépôt, et les"
+echo "manifests qu'elle produit sont conformes aux schémas."
