@@ -425,8 +425,17 @@ KSOPS ne pourraient identifier la ressource avant déchiffrement.
 
 Côté cluster, le repo-server d'ArgoCD monte la clé privée depuis le secret
 `sops-age` et exécute KSOPS comme plugin exec de kustomize — un initContainer
-qui copie les binaires, plutôt qu'un sidecar qui réserverait de la mémoire en
+qui copie le binaire, plutôt qu'un sidecar qui réserverait de la mémoire en
 permanence.
+
+**Seul `ksops` est copié, pas le kustomize que KSOPS embarque.** Ce dernier était
+monté par-dessus celui de l'image ArgoCD, et c'est un piège : KSOPS v4.5.1
+livre kustomize v5.3.0, qui détecte Helm par `helm version -c --short` alors que
+Helm 4 a supprimé la forme courte `-c`. Toute kustomization utilisant
+`helmCharts:` — `platform/teleport` — échouait alors au rendu. Le kustomize de
+l'image (v5.8.1) exécute le plugin ksops aussi bien et n'a pas ce défaut. La
+compatibilité repose donc sur le kustomize d'ArgoCD : **à revérifier à chaque
+montée de KSOPS ou d'ArgoCD.**
 
 Tout fichier chiffré est suffixé `.enc.yaml`. Les variantes en clair sont
 bloquées par `.gitignore`.

@@ -173,13 +173,13 @@ server:
           rules:
             - alert: StreamRedisProcheDeSonPlafond
               # `demo_stream_lag`, publié par l'API, et non
-              # `keda_scaler_metrics_value` : cette dernière vaut ce que lit le
-              # déclencheur du ScaledObject, aujourd'hui le nombre d'entrées
-              # distribuées non acquittées (repli pendingEntriesCount, cf.
-              # workloads/worker/scaledobject.yaml). Ce n'est pas le retard, et
-              # cela changerait de sens le jour où le déclencheur passe à
-              # lagCount. `demo_stream_lag` mesure le retard réel quel que soit
-              # le scaler.
+              # `keda_scaler_metrics_value`. Les deux valent aujourd'hui la même
+              # chose — le déclencheur est en `lagCount` — mais la seconde
+              # change de SENS si le mode du scaler change un jour
+              # (pendingEntriesCount et streamLength comptent autre chose sous
+              # le même nom de métrique). Une alerte dont le seuil dépend d'un
+              # réglage d'autoscaling est une alerte qui devient fausse en
+              # silence. `demo_stream_lag` mesure le retard, point.
               #
               # Le seuil est l'approche de DEMO_STREAM_MAXLEN (10 000), pas la
               # saturation des consommateurs. Au-delà de MAXLEN, XADD supprime

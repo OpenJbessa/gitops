@@ -82,35 +82,45 @@ spec:
         consumerGroup: workers
 
         # -------------------------------------------------------------------
-        # REPLI ASSUMÉ : `pendingEntriesCount` et non `lagCount`.
+        # `lagCount` : un réplica par tranche de 500 entrées de RETARD.
         #
-        # `lagCount` est le bon critère — il mesure le retard réel du groupe,
-        # entrées pas encore distribuées comprises. Il n'est pas posé ici parce
-        # qu'il n'a pas pu être vérifié sur le cluster : le certificat Teleport
-        # du poste a expiré et son renouvellement demande une MFA interactive.
+        # Support vérifié dans la source du scaler de la version déployée —
+        # kedacore/keda v2.20.2, commit 68a5b502, chart épinglé dans
+        # apps/platform/keda.yaml — fichier pkg/scalers/redis_streams_scaler.go :
         #
-        # CE QUE CE REPLI NE VOIT PAS : `pendingEntriesCount` ne compte que les
-        # entrées DISTRIBUÉES et non acquittées. Un consommateur ne réclame que
-        # ce qu'il peut traiter, donc ce nombre reste proche de la taille d'un
-        # lot même quand des milliers d'entrées attendent dans le stream. Avec
-        # un seuil de 500, la montée en charge peut tout simplement ne jamais se
-        # déclencher pendant une rafale.
+        #   l. 29   lagMetadata = "lagCount"
+        #   l. 54   TargetLag int64 `keda:"name=lagCount, order=triggerMetadata, optional"`
+        #   l. 83   r.scaleFactor = lagFactor   -- choisi dès que consumerGroup
+        #           est renseigné ET lagCount non nul ; TargetPendingEntriesCount
+        #           est alors remis à zéro, les deux modes ne coexistent pas.
+        #   l. 250  return group.Lag            -- le champ `lag` de XINFO GROUPS
         #
-        # À BASCULER DÈS QUE LE CLUSTER EST JOIGNABLE. La vérification utile
-        # n'est pas `kubectl explain scaledobject.spec.triggers` : les métadonnées
-        # d'un déclencheur sont une map[string]string non typée dans la CRD, et
-        # `explain` ne dira donc jamais si `lagCount` est reconnu. Ce qui tranche,
-        # c'est le scaler de la version déployée :
+        # La vérification s'est faite sur la source et non sur le cluster, faute
+        # d'accès (certificat Teleport expiré, MFA interactive). C'est en
+        # l'occurrence la meilleure preuve : `kubectl explain
+        # scaledobject.spec.triggers` n'aurait rien dit, les métadonnées d'un
+        # déclencheur étant une map[string]string non typée dans la CRD.
         #
-        #   kubectl -n keda get deploy keda-operator -o jsonpath='{..image}'
-        #   kubectl -n keda logs deploy/keda-operator | grep -i 'redis-streams\|lagCount'
+        # PRÉREQUIS REDIS 7. Le scaler lit `redis_version` avant tout appel et
+        # refuse en dessous de 7 (l. 225, « redis version 7+ required for lag ») :
+        # le champ `lag` de XINFO GROUPS n'existe pas avant. `data/redis` épingle
+        # redis:8.8.2-alpine, la condition est donc largement tenue. Seule une
+        # rétrogradation majeure la casserait, et elle échouerait bruyamment —
+        # le scaler renvoie une erreur, il ne retombe pas silencieusement sur
+        # un autre mode.
         #
-        # Puis remplacer les deux lignes ci-dessous par :
-        #   lagCount: "500"
-        # et retirer activationPendingEntriesCount, sans équivalent utile ici.
+        # POURQUOI PAS LES DEUX AUTRES MODES :
+        #   - `pendingEntriesCount` ne compte que les entrées DISTRIBUÉES et non
+        #     acquittées. Un consommateur ne réclame que ce qu'il peut traiter :
+        #     ce nombre reste proche d'un lot même avec des milliers d'entrées en
+        #     attente, et la montée en charge ne se déclencherait jamais.
+        #   - `streamLength` compte les entrées PRÉSENTES, acquittées comprises.
+        #     Avec MAXLEN à 10 000, le stream reste plein une fois tout traité :
+        #     le déclencheur resterait coincé au plafond en permanence.
         # -------------------------------------------------------------------
-        pendingEntriesCount: "500"
-        activationPendingEntriesCount: "5"
+        lagCount: "500"
+        # Pas d'`activationLagCount` : il ne sert qu'à sortir de zéro réplica, et
+        # minReplicaCount vaut 1. Le laisser à son défaut (0) est sans effet ici.
 
         databaseIndex: "0"
         enableTLS: "false"
