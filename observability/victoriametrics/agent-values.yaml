@@ -53,6 +53,30 @@ podAnnotations:
   prometheus.io/path: "/metrics"
 
 # ---------------------------------------------------------------------------
+# Jeton de collecte de l'API.
+#
+# `GET /metrics` de l'API exige `Authorization: Bearer {METRICS_TOKEN}`. La
+# découverte par annotation n'envoie aucun en-tête : elle obtiendrait 404 et
+# ferait basculer la cible en `up == 0`. D'où un job dédié plus bas, et ce
+# montage.
+#
+# Le secret `api-metrics-token` vit dans `observability`, chiffré par SOPS
+# (metrics-token.enc.yaml). C'est la MÊME valeur que `METRICS_TOKEN` dans
+# `workloads/api/secrets.enc.yaml` : les secrets ne traversent pas les
+# namespaces, la valeur est donc chiffrée deux fois et les deux copies tournent
+# ensemble. Les faire diverger donne un 404 sur /metrics et une collecte muette.
+# ---------------------------------------------------------------------------
+extraVolumes:
+  - name: api-metrics-token
+    secret:
+      secretName: api-metrics-token
+
+extraVolumeMounts:
+  - name: api-metrics-token
+    mountPath: /etc/vmagent/secrets/api-metrics-token
+    readOnly: true
+
+# ---------------------------------------------------------------------------
 # Cibles de collecte
 # ---------------------------------------------------------------------------
 config:
@@ -98,6 +122,46 @@ config:
         - source_labels: [__meta_kubernetes_pod_phase]
           action: drop
           regex: (Succeeded|Failed)
+
+    # -----------------------------------------------------------------------
+    # Métriques de démonstration de l'API, sur un job dédié.
+    #
+    # Pourquoi pas le job par annotation ci-dessus : il n'envoie pas d'en-tête
+    # Authorization, et /metrics répondrait 404. Le pod de l'API ne porte donc
+    # plus d'annotation `prometheus.io/*` du tout — voir
+    # workloads/api/deployment.yaml.
+    #
+    # Séries attendues : demo_events_emitted_total, demo_events_processed_total,
+    # demo_stream_lag, demo_active_consumers, demo_active_accounts.
+    # -----------------------------------------------------------------------
+    - job_name: api-demo
+      # 15 s et non les 30 s globales : une rafale dure 60 s, ce qui ne
+      # donnerait que deux points — de quoi tracer une droite, pas une courbe.
+      scrape_interval: 15s
+      authorization:
+        type: Bearer
+        credentials_file: /etc/vmagent/secrets/api-metrics-token/token
+      kubernetes_sd_configs:
+        - role: pod
+          namespaces:
+            names: [apps]
+      relabel_configs:
+        # Le pod de l'API et lui seul : le consommateur et le générateur
+        # n'exposent pas de port.
+        - source_labels:
+            - __meta_kubernetes_pod_label_app_kubernetes_io_name
+            - __meta_kubernetes_pod_label_app_kubernetes_io_component
+          action: keep
+          regex: api;http
+        - source_labels: [__meta_kubernetes_pod_container_port_number]
+          action: keep
+          regex: "8080"
+        - target_label: __metrics_path__
+          replacement: /metrics
+        - source_labels: [__meta_kubernetes_namespace]
+          target_label: namespace
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
 
     # -----------------------------------------------------------------------
     # Métriques du nœud, via le kubelet.

@@ -1,6 +1,37 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Pas de `namespace:` au niveau de la kustomization : les manifests bruts n'en
+# avaient pas avant ce changement et le tenaient de la destination de
+# l'Application. En poser un ici réécrirait aussi les références de
+# ServiceAccount dans les liaisons RBAC du chart, ce que rien ne demande.
+# Le chart, lui, reçoit bien `teleport` par le champ `namespace` ci-dessous.
+
+# ---------------------------------------------------------------------------
+# Teleport est la seule Application du dépôt qui n'utilise PAS le motif
+# multi-source (une source de valeurs, une source de chart, une source de
+# manifests). Le chart est inflaté ici par kustomize, pour une raison précise :
+# le patch plus bas.
+#
+# Une source Helm et une source kustomize d'une même Application ArgoCD sont
+# rendues indépendamment puis concaténées. La seconde ne peut donc rien patcher
+# de ce que produit la première. Or ce qu'il faut patcher est codé en dur dans
+# le chart, sans valeur pour l'exposer.
+#
+# Le chart reste amont et épinglé : rien n'est vendorisé. Contrepartie assumée,
+# `--enable-helm` dans `kustomize.buildOptions` (cf. bootstrap/argocd-values.yaml).
+# ---------------------------------------------------------------------------
+helmCharts:
+  - name: teleport-cluster
+    repo: https://charts.releases.teleport.dev
+    version: 18.10.0
+    releaseName: teleport
+    namespace: teleport
+    valuesFile: values.yaml
+    # Cf. apps/platform/teleport.yaml : ne couvre pas les Jobs `teleport-*-test`
+    # de ce chart, qui sont des hooks pre-install et non des tests.
+    skipTests: true
+
 resources:
   - ingressroute-tcp.yaml
   - recordings-gc.yaml
@@ -9,3 +40,37 @@ resources:
   # appliqué qu'à la main — le dépôt décrivait alors une posture que le cluster
   # n'appliquait pas.
   - role-platform-admin.yaml
+
+# ---------------------------------------------------------------------------
+# L'initContainer `wait-auth-update` du proxy : 256 Mo de requête → 100 Mo.
+#
+# Ce qu'il fait, vérifié dans le chart 18.10.0 épinglé ci-dessus :
+#
+#   command: [teleport, wait, no-resolve, teleport-auth-previous.teleport.svc...]
+#
+# Il attend que le nom DNS du service auth de la version majeure PRÉCÉDENTE
+# cesse de résoudre, ce qui signale que tous les pods auth sont montés de
+# version. Il retient le déploiement du proxy pendant une montée de version
+# majeure. Il n'écrit rien, ne copie rien, ne monte aucun volume : c'est une
+# boucle de résolution DNS.
+#
+# Les auteurs du chart écrivent eux-mêmes, juste au-dessus de ces ressources :
+#   « we hardcode small limits for this tiny container »
+# 256 Mo pour une attente DNS n'est pas « small ». Comme Kubernetes réserve
+# max(initContainers, somme des conteneurs) pour toute la vie du pod, ces
+# 256 Mo immobilisaient le pod proxy entier alors que son conteneur principal
+# n'en demande que 100 — soit 156 Mo bloqués en permanence.
+#
+# La limite reste celle du chart (512 Mo) : elle n'entre pas dans la
+# réservation de l'ordonnanceur, et la baisser ne rendrait rien au budget.
+# ---------------------------------------------------------------------------
+patches:
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: teleport-proxy
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/initContainers/0/resources/requests/memory
+        value: 100Mi

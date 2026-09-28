@@ -7,6 +7,10 @@ resources:
   - deployment.yaml
   - scaledobject.yaml
   - networkpolicy.yaml
+  # Générateur d'événements et purge. Même Application, même image, même tag
+  # que le consommateur : les deux forment la séquence que KEDA observe.
+  - emitter.yaml
+  - emitter-networkpolicy.yaml
 
 # Même image que l'API : le worker n'est que la même base de code lancée avec
 # une autre commande. Les deux tags doivent donc avancer ensemble, et la CI

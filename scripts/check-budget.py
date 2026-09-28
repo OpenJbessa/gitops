@@ -142,9 +142,40 @@ def supplement_autoscaling(docs_locaux) -> tuple[int, str]:
     return 0, ""
 
 
+def table_markdown(lignes, total, pic, total_cpu, pic_cpu,
+                   replicas_sup, nom_scaled, par_replica) -> str:
+    """La table de budget au format du README.
+
+    Elle existe pour qu'il n'y ait qu'UNE source de vérité. La table écrite à la
+    main dans le README a divergé deux fois de la réalité mesurée — d'abord en
+    oubliant l'opérateur Teleport activé après coup, puis en gardant les
+    anciennes réservations du contrôleur ArgoCD. Le README renvoie donc
+    désormais ici plutôt que de recopier des chiffres.
+    """
+    out = ["| Composant | Réservé | CPU |", "|---|---:|---:|"]
+    for nom, mio, cpu, note in sorted(lignes, key=lambda x: -x[1]):
+        suffixe = f" *({note})*" if note else ""
+        out.append(f"| `{nom}`{suffixe} | {mio} Mi | {cpu}m |")
+    out.append(f"| **Total au repos** | **{total} Mi** | **{total_cpu}m** |")
+    if replicas_sup:
+        out.append(
+            f"| **Total au pic** (+{replicas_sup} × `{nom_scaled}` à {par_replica} Mi) "
+            f"| **{pic} Mi** | **{pic_cpu}m** |"
+        )
+    out.append(f"| *Plafond* | *{PLAFOND_MIO} Mi* | *{PLAFOND_CPU_M}m* |")
+    return "\n".join(out)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifests", default="/tmp/rendered", type=pathlib.Path)
+    ap.add_argument(
+        "--markdown",
+        action="store_true",
+        help="Émet la table de budget au format du README, sur la sortie "
+             "standard, à la place du rapport lisible. Le code de retour reste "
+             "celui du contrôle.",
+    )
     args = ap.parse_args()
 
     docs = []
@@ -164,10 +195,11 @@ def main() -> int:
 
     lignes, total, total_cpu = parcourir(docs)
 
-    print(f"{len(fichiers)} fichiers rendus + {len(directs)} manifests directs\n")
-    for nom, mio, cpu, note in sorted(lignes, key=lambda x: -x[1]):
-        suffixe = f"   <- {note}" if note else ""
-        print(f"  {mio:>5} Mi   {cpu:>4}m   {nom}{suffixe}")
+    if not args.markdown:
+        print(f"{len(fichiers)} fichiers rendus + {len(directs)} manifests directs\n")
+        for nom, mio, cpu, note in sorted(lignes, key=lambda x: -x[1]):
+            suffixe = f"   <- {note}" if note else ""
+            print(f"  {mio:>5} Mi   {cpu:>4}m   {nom}{suffixe}")
 
     scaled = list(yaml.safe_load_all(
         (RACINE / "workloads" / "worker" / "scaledobject.yaml").read_text()
@@ -185,16 +217,20 @@ def main() -> int:
     pic = total + supplement
     pic_cpu = total_cpu + replicas_sup * cpu_replica
 
-    print()
-    print(f"  Au repos : {total:>5} Mi   / {PLAFOND_MIO} Mi   marge {PLAFOND_MIO - total} Mi")
-    if supplement:
-        print(f"  Au pic   : {pic:>5} Mi   / {PLAFOND_MIO} Mi   marge {PLAFOND_MIO - pic} Mi"
-              f"   (+{replicas_sup} réplicas de {nom_scaled} à {par_replica} Mi)")
+    if args.markdown:
+        print(table_markdown(lignes, total, pic, total_cpu, pic_cpu,
+                             replicas_sup, nom_scaled, par_replica))
+    else:
+        print()
+        print(f"  Au repos : {total:>5} Mi   / {PLAFOND_MIO} Mi   marge {PLAFOND_MIO - total} Mi")
+        if supplement:
+            print(f"  Au pic   : {pic:>5} Mi   / {PLAFOND_MIO} Mi   marge {PLAFOND_MIO - pic} Mi"
+                  f"   (+{replicas_sup} réplicas de {nom_scaled} à {par_replica} Mi)")
 
-    print()
-    print(f"  CPU au repos : {total_cpu:>5}m / {PLAFOND_CPU_M}m   marge {PLAFOND_CPU_M - total_cpu}m")
-    if replicas_sup:
-        print(f"  CPU au pic   : {pic_cpu:>5}m / {PLAFOND_CPU_M}m   marge {PLAFOND_CPU_M - pic_cpu}m")
+        print()
+        print(f"  CPU au repos : {total_cpu:>5}m / {PLAFOND_CPU_M}m   marge {PLAFOND_CPU_M - total_cpu}m")
+        if replicas_sup:
+            print(f"  CPU au pic   : {pic_cpu:>5}m / {PLAFOND_CPU_M}m   marge {PLAFOND_CPU_M - pic_cpu}m")
 
     echec = False
     if pic > PLAFOND_MIO:

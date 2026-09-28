@@ -265,30 +265,44 @@ Valeurs **mesurées** sur les manifests réellement rendus, pas déclarées. La
 réservation d'un pod est `max(initContainers, somme des conteneurs) × réplicas`,
 règle qui réserve quelques surprises (voir Teleport).
 
-| Composant | Réservé | Budget cible | |
-|---|---:|---:|---|
-| ArgoCD (controller, repo-server, server, redis) | **704 Mo** | 450 | **+254** |
-| Traefik | 80 Mo | 80 | |
-| cert-manager (controller, webhook, cainjector) | 120 Mo | 120 | |
-| Teleport (auth + proxy) | **356 Mo** | 200 | **+156** |
-| Kyverno (admission seul) | 176 Mo | 200 | |
-| KEDA (operator, metrics, webhooks) | 120 Mo | 120 | |
-| CloudNativePG (opérateur) | 100 Mo | 100 | |
-| PostgreSQL | 768 Mo | 768 | |
-| Redis | 256 Mo | 256 | |
-| VictoriaMetrics | 256 Mo | — | |
-| vmagent | 128 Mo | — | |
-| vmalert | 64 Mo | — | |
-| *(sous-total VM + vmagent + vmalert)* | *448 Mo* | *450* | |
-| Alertmanager | 80 Mo | 80 | |
-| kube-state-metrics | **48 Mo** | — | **ajouté** |
-| Grafana | 180 Mo | 180 | |
-| Gatus | 32 Mo | 32 | |
-| API Laravel | 320 Mo | 320 | |
-| Front Nuxt | 256 Mo | 256 | |
-| Worker (1 réplica) | 128 Mo | 128 | |
-| **Total au repos** | **4 172 Mo** | **4 600** | marge 428 |
-| **Total au pic** (worker à 4) | **4 556 Mo** | **4 600** | marge 44 |
+### Il n'y a plus de table ici
+
+Elle a divergé deux fois de la réalité — en oubliant l'opérateur Teleport activé
+après coup, puis en gardant les anciennes réservations du contrôleur ArgoCD —
+et une table de budget fausse est pire que pas de table : elle donne une marge
+qu'on croit avoir. La seule source de vérité est le script, qui lit les
+manifests rendus :
+
+```bash
+python3 scripts/render.py --out /tmp/rendered
+python3 scripts/check-budget.py --manifests /tmp/rendered
+
+# La même chose au format de ce README, si une table est nécessaire quelque part
+python3 scripts/check-budget.py --manifests /tmp/rendered --markdown
+```
+
+La tâche `budget` de la CI lance exactement ces commandes sur chaque pull
+request et refuse tout dépassement de 4 600 Mio ou de 1 500 m. Sa sortie est
+lisible dans les journaux du workflow : c'est là qu'il faut aller chercher les
+chiffres du jour, pas ici.
+
+Trois composants restent à commenter, parce que le script donne le chiffre mais
+pas la raison.
+
+**ArgoCD dépasse largement sa cible de 450 Mo**, et l'essentiel vient du
+contrôleur d'applications. La requête a été relevée pour la synchronisation
+initiale de son cache, qui liste d'un coup toutes les ressources du cluster,
+CRD comprises. Ramener la requête à 256 Mo en gardant la limite libérerait
+environ 128 Mo — à valider contre la consommation réelle du contrôleur, pas à
+appliquer d'autorité.
+
+**Teleport tenait 156 Mo de trop, c'est corrigé** (voir plus bas). L'opérateur
+Teleport, activé après coup, coûte 64 Mo qui sont désormais comptés.
+
+**kube-state-metrics** est un ajout par rapport au plan initial : deux
+livrables en dépendent et ne sont pas réalisables autrement — l'alerte
+`PodEnCrashLoop` (`kube_pod_container_status_waiting_reason`, publié par rien
+d'autre) et le panneau « réplicas worker » (`kube_deployment_status_replicas`).
 
 ### Rapporté à l'allocatable réel
 
@@ -329,59 +343,75 @@ pics ne coïncident pas — mais ça a deux conséquences pratiques :
 Le levier de correction est alors les **limites**, pas les requests : baisser une
 request libère de l'ordonnancement, baisser une limite réduit le surengagement.
 
-### Les trois écarts, et pourquoi
+### Les écarts, et pourquoi
 
-**ArgoCD, +62 Mo.** L'application-controller a été tué par l'OOM killer neuf
+**ArgoCD.** L'application-controller a été tué par l'OOM killer neuf
 secondes après son démarrage lors du premier amorçage, avec une limite à
 256 Mo. La cause n'est pas sa consommation de régime — mesurée bien plus bas —
 mais la synchronisation initiale de son cache : il liste d'un coup toutes les
 ressources du cluster, CRD comprises. Le correctif ouvre surtout la **limite**
-(512 Mo) plutôt que la request (256 Mo) : l'ordonnanceur réserve le régime
-permanent, la limite absorbe le pic de démarrage.
+plutôt que la request : l'ordonnanceur réserve le régime permanent, la limite
+absorbe le pic de démarrage.
 
-**Teleport, +156 Mo.** Le chart `teleport-cluster` insère dans le pod proxy un
-initContainer `wait-auth-update` dont les ressources sont codées en dur à
-256 Mo / 512 Mo, avec ce commentaire des auteurs :
+Les valeurs ont depuis été relevées au-delà de ce que décrivait ce paragraphe.
+Les chiffres du jour sont ceux du script, pas ceux d'ici.
+
+**Teleport, +156 Mo — corrigé.** Le chart `teleport-cluster` insère dans le pod
+proxy un initContainer `wait-auth-update` dont les ressources étaient codées en
+dur à 256 Mo / 512 Mo, avec ce commentaire des auteurs :
 
 > propagating through the limits from the main resources section would double
 > the requested amounts and may prevent scheduling on the cluster. as such, we
 > hardcode small limits for this tiny container.
 
-Comme Kubernetes réserve `max(init, conteneurs)` pour toute la durée de vie du
-pod, le proxy immobilise 256 Mo alors qu'il en consomme une centaine. Ce n'est
-pas réglable par les valeurs.
+Cet initContainer lance `teleport wait no-resolve` sur le service auth de la
+version majeure précédente : il retient le déploiement du proxy tant que tous
+les pods auth ne sont pas montés de version. Il n'écrit rien, ne copie rien, ne
+monte aucun volume — c'est une boucle de résolution DNS. 256 Mo n'est pas
+« small », et comme Kubernetes réserve `max(init, conteneurs)` pour toute la
+durée de vie du pod, le proxy immobilisait 256 Mo alors que son conteneur
+principal n'en demande que 100.
 
-Deux sorties possibles si les 156 Mo deviennent gênants :
-- passer l'Application Teleport en inflation Helm par kustomize (`helmCharts:`)
-  et appliquer un patch JSON sur les ressources de cet initContainer — le chart
-  reste amont, rien n'est vendorisé, mais Teleport sort du motif multi-source
-  uniforme et il faut ajouter `--enable-helm` à `kustomize.buildOptions` ;
-- accepter, ce qui est le choix actuel.
+Aucune valeur du chart ne l'expose : `initContainers` ne fait qu'en **ajouter**.
+Et une source Helm d'ArgoCD ne peut pas être patchée par une source kustomize,
+les deux étant rendues indépendamment puis concaténées. Le choix retenu est donc
+celui qui était listé ici comme éventualité :
+
+- **Teleport est passé en inflation Helm par kustomize** (`helmCharts:` dans
+  `platform/teleport/kustomization.yaml`), avec un patch JSON sur la requête de
+  cet initContainer. Le chart reste amont et épinglé, rien n'est vendorisé.
+- Contreparties assumées : Teleport sort du motif multi-source uniforme et
+  devient la seule Application à source unique ; `--enable-helm` est ajouté à
+  `kustomize.buildOptions` ; la tâche `pinning` de la CI et `renovate.json` ont
+  été étendus pour continuer à voir la version du chart, qui n'est plus dans
+  `spec.sources[].chart`.
 
 Un piège voisin a été corrigé : dès qu'on fournit un certificat par
 `tls.existingSecretName`, le chart passe le proxy à **2 réplicas** même avec
 `highAvailability.replicaCount: 1`. Il faut le forcer sous
 `proxy.highAvailability.replicaCount`. Sans ça, Teleport coûtait 612 Mo.
 
-**kube-state-metrics, +48 Mo.** Composant absent de la table initiale, ajouté
-parce que deux livrables demandés en dépendent et ne sont pas réalisables
-autrement : l'alerte `PodEnCrashLoop`
-(`kube_pod_container_status_waiting_reason`, publié par rien d'autre) et le
-panneau « réplicas worker » (`kube_deployment_status_replicas`). Ce n'est ni
-kube-prometheus-stack ni l'opérateur Prometheus : un exportateur unique, sans
-CRD ni webhook, restreint à quatre collecteurs.
-
 ### Ce qui a été évité
 
 - **node-exporter** : le kubelet expose déjà `node_memory_working_set_bytes` et
   `node_cpu_usage_seconds_total` sur `/metrics/resource`.
-- **redis_exporter** : le retard du consumer group est publié par KEDA lui-même
-  (`keda_scaler_metrics_value`), qui le lit déjà pour décider de monter en charge.
+- **redis_exporter** : l'état du stream est publié par l'API elle-même
+  (`demo_stream_lag`, collecté par le job `api-demo` de vmagent), et KEDA publie
+  en plus ce que lit son déclencheur (`keda_scaler_metrics_value`).
 - **sidecar de dashboards Grafana** : la ConfigMap est construite par kustomize
   et montée directement, son nom étant connu à l'avance.
 - **opérateur VictoriaMetrics** : trois charts simples plutôt que
   `victoria-metrics-k8s-stack`.
-- **opérateur Teleport** : les rôles sont appliqués par `tctl` (voir plus bas).
+- **CronJob de purge des comptes** : la purge est portée par le générateur
+  d'événements, qui tourne déjà en permanence et prend un verrou Redis. Un
+  CronJob aurait ajouté une réservation transitoire de 96 Mo au pire moment —
+  celui du pic d'autoscaling.
+
+L'**opérateur Teleport** figurait ici. Il ne le devrait plus : il est déployé
+(64 Mo), et c'est lui qui réconcilie `role-platform-admin.yaml` vers l'API
+Teleport. L'argument budgétaire initial reposait sur une estimation que les
+mesures ont invalidée, et le coût de l'étape manuelle `tctl` — un rôle décrit
+dans le dépôt mais jamais appliqué — était plus élevé que ces 64 Mo.
 
 ---
 
@@ -446,19 +476,24 @@ grep -E '^(apiVersion|kind|type):' <nom>.enc.yaml   # doit rester lisible
 Les deux à la fois : des valeurs chiffrées, et des métadonnées en clair pour que
 kustomize et KSOPS sachent de quelle ressource il s'agit avant déchiffrement.
 
-### Les trois secrets du dépôt
+### Les secrets du dépôt
 
 | Fichier à produire | Contenu | Wave bloquée sans lui |
 |---|---|---|
 | `platform/cert-manager/issuers/cloudflare-token.enc.yaml` | Jeton API Cloudflare | 2 — aucun certificat |
 | `data/postgres/credentials.enc.yaml` | Mots de passe `app` et `postgres` | 5 — base non initialisée |
-| `workloads/api/secrets.enc.yaml` | `APP_KEY`, identifiants base | 7 — API et worker |
+| `observability/victoriametrics/ntfy.enc.yaml` | URL du sujet ntfy des alertes | 6 — Alertmanager ne démarre pas |
+| `observability/victoriametrics/metrics-token.enc.yaml` | Jeton que vmagent présente à `/metrics` de l'API | 6 — vmagent ne démarre pas |
+| `workloads/api/secrets.enc.yaml` | `APP_KEY`, identifiants base, OAuth, `METRICS_TOKEN` | 7 — API, consommateur et générateur |
 
-**Duplication à surveiller** : `DB_PASSWORD` dans `workloads/api/secrets.enc.yaml`
-doit être identique au mot de passe du rôle `app` dans
-`data/postgres/credentials.enc.yaml`. Les secrets Kubernetes ne traversent pas
-les namespaces, donc la même valeur est chiffrée deux fois. Les faire diverger
-casse l'accès à la base sans message clair : l'API répond simplement 500.
+**Deux duplications à surveiller.** Les secrets Kubernetes ne traversent pas les
+namespaces : dans les deux cas la même valeur est chiffrée deux fois, et les
+deux copies doivent tourner ensemble.
+
+| Valeur | Fichiers | Symptôme d'une divergence |
+|---|---|---|
+| Mot de passe du rôle `app` | `workloads/api/secrets.enc.yaml` (`DB_PASSWORD`) et `data/postgres/credentials.enc.yaml` | L'API répond 500, sans message clair |
+| Jeton de collecte | `workloads/api/secrets.enc.yaml` (`METRICS_TOKEN`) et `observability/victoriametrics/metrics-token.enc.yaml` (`token`) | `/metrics` répond 404, la cible bascule en `up == 0` — une panne de collecte qui ressemble à une panne d'application |
 
 ### Rotation du mot de passe PostgreSQL
 
@@ -578,6 +613,10 @@ et ouvre une pull request. Le dépôt applicatif ne reçoit jamais de kubeconfig
 | Mots de passe PostgreSQL | `data/postgres/credentials.enc.yaml` | `openssl rand -base64 32` |
 | `APP_KEY` Laravel | `workloads/api/secrets.enc.yaml` | `php artisan key:generate --show` |
 | `DB_PASSWORD` | `workloads/api/secrets.enc.yaml` | Identique au rôle `app` ci-dessus |
+| Sujet ntfy des alertes | `observability/victoriametrics/ntfy.enc.yaml` | `echo "jbessa-$(openssl rand -hex 12)"` |
+| `METRICS_TOKEN` | `workloads/api/secrets.enc.yaml` **et** `observability/victoriametrics/metrics-token.enc.yaml` | `openssl rand -hex 32`, la même valeur dans les deux |
+| OAuth GitHub | `workloads/api/secrets.enc.yaml` | Settings → Developer settings → OAuth Apps. Aucun scope. Retour : `https://api.jbessa.tech/auth/github/callback` |
+| OAuth Google | `workloads/api/secrets.enc.yaml` | console.cloud.google.com → Credentials. Scopes `openid profile`. Retour : `https://api.jbessa.tech/auth/google/callback` |
 
 Déjà renseignés : domaine `jbessa.tech`, organisation `OpenJbessa`, registre
 `ghcr.io/openjbessa`.

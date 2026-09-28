@@ -1,6 +1,6 @@
-# API et worker vers Redis. Le front Nuxt vit dans le même namespace `apps` et
-# n'a rien à y faire : la sélection porte donc sur les labels de pod, pas sur le
-# namespace entier.
+# API, consommateur et générateur vers Redis. Le front Nuxt vit dans le même
+# namespace `apps` et n'a rien à y faire : la sélection porte donc sur les
+# labels de pod, pas sur le namespace entier.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -28,6 +28,8 @@ spec:
                 values:
                   - api
                   - worker
+                  # Émet dans le stream et lit la clé `demo:burst`.
+                  - emitter
       ports:
         - protocol: TCP
           port: 6379

@@ -9,8 +9,17 @@
 #     de l'API continue de tourner sur l'ancien schéma. C'est exactement le
 #     comportement qu'on veut.
 #
-# `hook-delete-policy: HookSucceeded` : le Job disparaît quand il réussit, et
-# reste quand il échoue — c'est là qu'on a besoin de ses journaux.
+# `hook-delete-policy: BeforeHookCreation,HookSucceeded` : le Job disparaît
+# quand il réussit, et reste quand il échoue — c'est là qu'on a besoin de ses
+# journaux. `BeforeHookCreation` en plus, parce qu'avec `HookSucceeded` seul un
+# Job en échec survit, garde son nom, et bloque la création du suivant : la
+# synchronisation d'après échoue sur un conflit de nom, pas sur la migration.
+#
+# Règle de compatibilité des migrations : le hook tourne AVANT que le nouveau
+# Deployment soit appliqué, donc pendant que le code de la version précédente
+# sert encore le trafic. Toute migration doit fonctionner avec ce code — on
+# ajoute d'abord (colonne nullable, table nouvelle), on retire dans une version
+# ultérieure.
 # ---------------------------------------------------------------------------
 apiVersion: batch/v1
 kind: Job
@@ -19,7 +28,7 @@ metadata:
   namespace: apps
   annotations:
     argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
   labels:
     app.kubernetes.io/name: api
     app.kubernetes.io/component: migrate
@@ -80,9 +89,12 @@ spec:
             limits:
               memory: 384Mi
           volumeMounts:
-            - name: framework-storage
-              mountPath: /var/www/html/storage/framework
+            # /tmp seulement : la migration n'écrit rien dans storage/framework,
+            # vérifié avec l'image de production en lecture seule. L'emptyDir
+            # `framework-storage` qu'il montait auparavant n'avait pas d'usage.
+            - name: tmp
+              mountPath: /tmp
       volumes:
-        - name: framework-storage
+        - name: tmp
           emptyDir:
-            sizeLimit: 64Mi
+            sizeLimit: 32Mi

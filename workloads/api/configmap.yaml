@@ -32,22 +32,70 @@ data:
   REDIS_CLIENT: phpredis
 
   # Préfixe VIDE, et c'est structurant : par défaut Laravel préfixe ses clés
-  # Redis d'après APP_NAME (« jbessa_database_ » par exemple). La file
-  # deviendrait alors `jbessa_database_queues:default`, alors que le
-  # ScaledObject KEDA observe `queues:default`. KEDA lirait une clé inexistante,
-  # compterait zéro, et le worker resterait à un réplica — sans la moindre
-  # erreur nulle part.
+  # Redis d'après APP_NAME (« jbessa_database_ » par exemple). Le stream
+  # deviendrait alors `jbessa_database_demo:events`, alors que le ScaledObject
+  # KEDA observe `demo:events`. KEDA lirait une clé inexistante, compterait
+  # zéro, et le worker resterait à un réplica — sans la moindre erreur nulle
+  # part.
   #
   # Toute modification ici doit être répercutée dans
   # workloads/worker/scaledobject.yaml.
   REDIS_PREFIX: ""
 
-  # Session, cache et file sur Redis. Pour la session et le cache c'est une
-  # nécessité : le système de fichiers est en lecture seule et l'emptyDir
-  # disparaît à chaque redéploiement.
+  # Session et cache sur Redis : nécessité, le système de fichiers est en
+  # lecture seule et l'emptyDir disparaît à chaque redéploiement.
   SESSION_DRIVER: redis
   CACHE_STORE: redis
-  QUEUE_CONNECTION: redis
   BROADCAST_CONNECTION: log
 
+  # `sync` et non `redis` : il n'y a plus de file Laravel. Le travail de fond
+  # passe par un stream Redis lu par `demo:consume-events`, pas par le système
+  # de files du framework. Laissé sur `redis`, tout `dispatch()` résiduel
+  # empilerait des jobs dans une file que plus personne ne dépile.
+  QUEUE_CONNECTION: sync
+
   FILESYSTEM_DISK: local
+
+  APP_LOCALE: fr
+  FRONTEND_URL: https://jbessa.tech
+
+  # Cookie de session partagé entre jbessa.tech et api.jbessa.tech : d'où le
+  # point initial du domaine. Sanctum n'accepte une session que si le domaine
+  # appelant est dans SANCTUM_STATEFUL_DOMAINS.
+  SESSION_DOMAIN: .jbessa.tech
+  SESSION_SECURE_COOKIE: "true"
+  SESSION_SAME_SITE: lax
+  SANCTUM_STATEFUL_DOMAINS: jbessa.tech
+  CORS_ALLOWED_ORIGINS: https://jbessa.tech
+
+  # Les URL de retour OAuth sont publiques : elles doivent être déclarées à
+  # l'identique dans les consoles GitHub et Google. Les identifiants, eux, sont
+  # dans api-secrets.
+  GITHUB_REDIRECT_URI: https://api.jbessa.tech/auth/github/callback
+  GOOGLE_REDIRECT_URI: https://api.jbessa.tech/auth/google/callback
+
+  # --- Démonstration -------------------------------------------------------
+  DEMO_TTL_MINUTES: "30"
+  DEMO_MAX_ACTIVE: "50"
+  DEMO_MAX_ELEVATIONS: "3"
+  DEMO_SIGNUP_PER_HOUR: "10"
+  # Balayage des comptes abandonnés, porté par le générateur et non par un
+  # CronJob. Le délai maximal entre l'expiration d'un compte et l'effacement de
+  # ses traces est cet intervalle, tant que le générateur tourne.
+  DEMO_PURGE_INTERVAL_SECONDS: "300"
+  DEMO_BACKGROUND_RATE: "2"
+  # 150 et non 200 : à 200/s le retard culminerait vers 6 000 entrées, soit
+  # 1,7 fois MAXLEN seulement. À 150/s il plafonne à 3 000, avec un facteur 3,3.
+  # Au-delà de MAXLEN, XADD supprimerait des entrées non lues et Redis ne
+  # saurait plus calculer le retard.
+  DEMO_BURST_RATE: "150"
+  DEMO_BURST_SECONDS: "60"
+  DEMO_STREAM_MAXLEN: "10000"
+  DEMO_WORK_MS: "20"
+
+  # Sources lues par /status, /infrastructure et /scaling. L'application a ces
+  # mêmes valeurs en défaut ; les écrire ici rend la dépendance visible dans le
+  # manifeste, à côté de la règle d'egress qui la rend possible
+  # (networkpolicy.yaml).
+  GATUS_URL: http://gatus.observability.svc.cluster.local:8080
+  VICTORIAMETRICS_URL: http://vmsingle.observability.svc.cluster.local:8428

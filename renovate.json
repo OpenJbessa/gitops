@@ -15,6 +15,11 @@
     "managerFilePatterns": ["/^apps/.+\\.ya?ml$/"]
   },
 
+  "kustomize": {
+    "description": "Charts inflatés par kustomize (helmCharts:) plutôt que portés par une Application. Un seul aujourd'hui : platform/teleport, passé en inflation pour patcher un initContainer codé en dur dans le chart. Sans ce bloc, sa version sortirait du suivi Renovate en même temps qu'elle sort de spec.sources[].chart.",
+    "managerFilePatterns": ["/(^|/)kustomization\\.ya?ml$/"]
+  },
+
   "kubernetes": {
     "description": "Images référencées dans les manifests bruts.",
     "managerFilePatterns": [

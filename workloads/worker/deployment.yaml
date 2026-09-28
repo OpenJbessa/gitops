@@ -1,11 +1,16 @@
 # ---------------------------------------------------------------------------
-# Worker de file — même image que l'API, commande différente.
+# Consommateur du stream Redis — même image que l'API, commande différente.
 # Budget : 128 Mo de request par réplica, 192 Mo de limite.
 #
 # Déploiement séparé et non un second conteneur dans le pod de l'API : les deux
 # n'ont ni le même profil de charge ni la même règle d'échelle. L'API sert des
-# requêtes courtes et reste à un réplica ; le worker consomme une file et monte
-# jusqu'à quatre. Les coller dans un même pod rendrait cet écart impossible.
+# requêtes courtes et reste à un réplica ; le consommateur dépile un stream et
+# monte jusqu'à quatre. Les coller dans un même pod rendrait cet écart
+# impossible.
+#
+# Le Deployment garde son nom `worker` : c'est la cible du ScaledObject et le
+# sélecteur des NetworkPolicies. Seul son travail a changé — il lit le stream
+# `demo:events` au lieu de la file Laravel, qui n'existe plus.
 #
 # Le nombre de réplicas n'est PAS fixé ici : il est piloté par le ScaledObject
 # KEDA (scaledobject.yaml). `replicas` est donc volontairement absent du
@@ -42,32 +47,11 @@ spec:
         seccompProfile:
           type: RuntimeDefault
 
-      initContainers:
-        - name: prepare-storage
-          image: ghcr.io/openjbessa/api:placeholder
-          command:
-            - /bin/sh
-            - -c
-            - mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views
-          workingDir: /var/www/html
-          securityContext:
-            runAsNonRoot: true
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
-            seccompProfile:
-              type: RuntimeDefault
-          resources:
-            requests:
-              cpu: 10m
-              memory: 32Mi
-            limits:
-              memory: 64Mi
-          volumeMounts:
-            - name: framework-storage
-              mountPath: /var/www/html/storage/framework
+      # Aucun initContainer. `prepare-storage` a disparu avec les vues
+      # compilées, et `config:cache` n'est pas nécessaire ici : sans cache,
+      # Laravel lit simplement l'environnement, ce qui fonctionne en lecture
+      # seule. L'initContainer de l'API existe pour éviter ce coût à chaque
+      # requête HTTP, pas pour rendre l'application démarrable.
 
       containers:
         - name: worker
@@ -76,15 +60,12 @@ spec:
           command:
             - php
             - artisan
-            - queue:work
-            - --queue=default
-            - --tries=3
-            - --sleep=1
-            # Le processus se termine de lui-même au bout d'une heure et
-            # Kubernetes le relance : c'est la parade classique aux fuites
-            # mémoire lentes de PHP en processus long. Sur 192 Mo de plafond,
-            # une fuite ne met pas longtemps à se voir.
-            - --max-time=3600
+            - demo:consume-events
+          # `--max-time` n'existe plus : c'était une option de `queue:work`.
+          # La parade aux fuites mémoire lentes de PHP repose désormais sur la
+          # limite de 192 Mo — un dépassement donne un OOMKill visible dans
+          # kube_pod_container_status_restarts_total — et sur l'alerte
+          # ConteneurProcheDeSaLimiteMemoire, qui prévient avant l'OOMKill.
 
           envFrom:
             - configMapRef:
@@ -109,28 +90,42 @@ spec:
             limits:
               memory: 192Mi
 
-          # Pas de sonde HTTP : le worker n'écoute sur aucun port. La vivacité
-          # se vérifie en constatant que le processus artisan tourne toujours.
+          # Pas de sonde HTTP : le consommateur n'écoute sur aucun port.
+          #
+          # L'ancienne sonde appelait `pgrep`, qui n'est PAS dans l'image :
+          # ni `ps` ni `pgrep` dans Debian slim. Elle échouait donc à chaque
+          # passage et aurait redémarré le consommateur en boucle.
+          #
+          # À la place, un battement de cœur : le consommateur touche
+          # /tmp/heartbeat à chaque tour de boucle, soit au plus toutes les 3 s
+          # (BLOCK de 2 s, lot de 1 s au pire). La sonde échoue si le fichier
+          # manque ou dépasse 30 s. `sh`, `date` et `stat` sont dans l'image.
+          #
+          # Elle distingue ce qu'une sonde de présence de processus ne voyait
+          # pas : un consommateur bloqué sur un Redis qui ne répond plus sans
+          # couper la connexion — le processus est bien vivant, la boucle non.
           livenessProbe:
             exec:
               command:
-                - /bin/sh
+                - sh
                 - -c
-                - pgrep -f "artisan queue:work" > /dev/null
-            initialDelaySeconds: 30
-            periodSeconds: 60
-            timeoutSeconds: 10
+                - 'f=/tmp/heartbeat; [ -f "$f" ] && [ $(( $(date +%s) - $(stat -c %Y "$f") )) -lt 30 ]'
+            # Aucun battement n'existe avant le premier tour de boucle.
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
 
           volumeMounts:
-            - name: framework-storage
-              mountPath: /var/www/html/storage/framework
+            - name: tmp
+              mountPath: /tmp
 
       volumes:
-        - name: framework-storage
+        - name: tmp
           emptyDir:
-            sizeLimit: 64Mi
+            sizeLimit: 16Mi
 
-      # Laisse au worker le temps de finir le job en cours avant d'être tué :
-      # au-delà, le job est repris par un autre réplica grâce à --tries.
-      terminationGracePeriodSeconds: 60
+      # Un lot dure au plus 1 s et l'attente bloquante 2 s : 30 s laissent très
+      # largement le temps de finir le lot en cours et d'acquitter. Ce qui n'est
+      # pas acquitté est repris par XAUTOCLAIM au démarrage d'un autre réplica.
+      terminationGracePeriodSeconds: 30

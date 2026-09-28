@@ -1,0 +1,101 @@
+# ---------------------------------------------------------------------------
+# Générateur d'événements et purge des comptes abandonnés.
+# Budget : 56 Mo de request, 72 Mo de limite.
+#
+# UN SEUL RÉPLICA, JAMAIS PLUS. Deux générateurs doubleraient le débit émis :
+# le débit n'est pas négocié entre instances, chacune émet le sien. D'où
+# `replicas: 1` explicite et `strategy: Recreate` — une bascule progressive
+# ferait cohabiter deux générateurs le temps du remplacement.
+#
+# Il vit dans workloads/worker/ et non dans un répertoire à lui : c'est la même
+# Application ArgoCD, la même image et le même tag que le consommateur. Les
+# deux forment la séquence que KEDA observe, et les séparer ferait avancer
+# leurs tags indépendamment.
+#
+# Les 56 Mo viennent d'une mesure sous charge, pas d'une estimation : 41 Mo au
+# pic pendant la purge de démarrage de 50 comptes expirés (le maximum posé par
+# DEMO_MAX_ACTIVE), + 30 %. La limite de 72 Mo reste sous le memory_limit de
+# PHP (128 Mo) : un dépassement donne un OOMKill du conteneur — visible dans
+# kube_pod_container_status_restarts_total — plutôt qu'une erreur PHP silencieuse.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emitter
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: emitter
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: emitter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: emitter
+        app.kubernetes.io/part-of: workloads
+        app.kubernetes.io/managed-by: argocd
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: emitter
+          image: ghcr.io/openjbessa/api:placeholder
+          imagePullPolicy: IfNotPresent
+          command:
+            - php
+            - artisan
+            - demo:emit-events
+
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          resources:
+            requests:
+              cpu: 25m
+              memory: 56Mi
+            limits:
+              memory: 72Mi
+
+          # Aucune sonde : le générateur n'écoute sur aucun port et n'a pas de
+          # battement de cœur. Un générateur arrêté se voit à la pente nulle de
+          # `demo_events_emitted_total`, ce qui est plus fiable qu'une sonde
+          # exec — une sonde qui ne sait vérifier que la présence du processus
+          # ne dirait rien d'un générateur vivant qui n'émet plus.
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+
+      # Arrêt mesuré à 0,3 s : le générateur n'a pas de lot à finir, seulement
+      # son itération d'une seconde. 10 s suffisent très largement.
+      terminationGracePeriodSeconds: 10

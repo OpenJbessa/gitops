@@ -1,12 +1,15 @@
 # ---------------------------------------------------------------------------
-# API Laravel — un seul réplica.
-# Budget : 320 Mo de request, 480 Mo de limite.
+# API Laravel — un seul réplica, deux conteneurs.
+# Budget : 320 Mo de request (288 php-fpm + 32 nginx), 480 Mo de limite.
 #
 # `strategy: Recreate` et non RollingUpdate : avec un seul réplica, une mise à
 # jour progressive ferait cohabiter ancien et nouveau pod, soit 640 Mo réservés
 # pendant la bascule. Sur 8 Go partagés par quinze charges, c'est ce qui
 # déclencherait l'éviction de quelque chose d'autre. Recreate coupe l'API
 # quelques secondes — c'est l'interruption assumée dès le départ.
+#
+# Le découpage 288 + 32 conserve exactement les 320 Mo précédents : nginx est
+# un ajout de structure, pas de budget.
 # ---------------------------------------------------------------------------
 apiVersion: apps/v1
 kind: Deployment
@@ -33,30 +36,38 @@ spec:
         app.kubernetes.io/component: http
         app.kubernetes.io/part-of: workloads
         app.kubernetes.io/managed-by: argocd
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
-        prometheus.io/path: "/metrics"
+      # Aucune annotation `prometheus.io/*` : la collecte par annotation
+      # n'envoie pas d'en-tête Authorization. `/metrics` exige un jeton et
+      # répondrait 404, ce qui ferait basculer la cible en `up == 0` — une
+      # panne de collecte déguisée en panne d'application. La collecte passe
+      # par un job vmagent dédié qui monte le jeton
+      # (cf. observability/victoriametrics/agent-values.yaml).
     spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
+        # Rend les emptyDir inscriptibles par l'UID 1000.
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
 
-      # Laravel attend que storage/framework contienne ses trois
-      # sous-répertoires. Le volume étant un emptyDir, il démarre vide à chaque
-      # création de pod : sans cette étape, le premier rendu de vue échoue.
       initContainers:
-        - name: prepare-storage
+        # Fige la configuration de l'environnement du pod dans
+        # /opt/app-config/config.php, hors de l'arborescence du code qui est en
+        # lecture seule. `package:discover` n'y figure pas : il tourne à la
+        # construction de l'image.
+        - name: config-cache
           image: ghcr.io/openjbessa/api:placeholder
           command:
-            - /bin/sh
-            - -c
-            - mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views
-          workingDir: /var/www/html
+            - php
+            - artisan
+            - config:cache
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
           securityContext:
             runAsNonRoot: true
             readOnlyRootFilesystem: true
@@ -69,30 +80,39 @@ spec:
           resources:
             requests:
               cpu: 10m
-              memory: 32Mi
-            limits:
               memory: 64Mi
+            limits:
+              memory: 128Mi
+          # 64 Mo sous les 320 Mo des conteneurs : la réservation du pod est
+          # max(initContainers, somme des conteneurs), cet initContainer
+          # n'ajoute donc rien au budget.
           volumeMounts:
-            - name: framework-storage
-              mountPath: /var/www/html/storage/framework
+            - name: app-config
+              mountPath: /opt/app-config
+            - name: tmp
+              mountPath: /tmp
 
       containers:
-        - name: api
+        - name: php-fpm
           # Le tag est posé par le transformateur `images` de kustomization.yaml,
           # seul endroit que la CI applicative modifie (par pull request).
           image: ghcr.io/openjbessa/api:placeholder
           imagePullPolicy: IfNotPresent
 
-          ports:
-            - name: http
-              containerPort: 8080
-              protocol: TCP
+          # Aucun port exposé : php-fpm écoute sur 127.0.0.1:9000 et n'est
+          # joignable que par nginx, dans le même pod.
 
           envFrom:
             - configMapRef:
                 name: api-config
             - secretRef:
                 name: api-secrets
+          env:
+            # Deux workers en `pm = static` : la mémoire du pod est prévisible.
+            # C'est ce réglage qu'il faudra revoir d'après le test de charge,
+            # pas la limite du conteneur.
+            - name: PHP_FPM_MAX_CHILDREN
+              value: "2"
 
           securityContext:
             runAsNonRoot: true
@@ -106,48 +126,118 @@ spec:
 
           resources:
             requests:
-              cpu: 50m
-              memory: 320Mi
+              cpu: 40m
+              memory: 288Mi
             limits:
-              memory: 480Mi
+              memory: 432Mi
 
+          # Les trois sondes passent par nginx, sur le port du pod. Le port est
+          # écrit en clair et non par son nom : un nom de port se résout dans
+          # les ports déclarés par le conteneur qui porte la sonde, et 8080 est
+          # déclaré par nginx.
+          #
           # Sondes délibérément tolérantes. Le nœud est partagé par PostgreSQL,
           # VictoriaMetrics et Teleport : un pic d'entrées-sorties chez le
           # voisin allonge les temps de réponse sans que l'API soit en faute.
-          # Des seuils serrés provoqueraient des redémarrages en cascade.
           startupProbe:
             httpGet:
               path: /up
-              port: http
-            periodSeconds: 5
+              port: 8080
+            periodSeconds: 2
             failureThreshold: 30
-            timeoutSeconds: 3
-          readinessProbe:
-            httpGet:
-              path: /up
-              port: http
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
           livenessProbe:
+            # /up ne touche ni la base ni Redis : une panne de PostgreSQL ne
+            # doit pas faire redémarrer l'API en boucle.
             httpGet:
               path: /up
-              port: http
+              port: 8080
             periodSeconds: 30
-            timeoutSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 5
+          readinessProbe:
+            # /ready vérifie PostgreSQL puis Redis, une seconde chacun au plus
+            # (mesuré : 0,97 s avec l'un puis l'autre gelé). D'où les 3 s.
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
 
           volumeMounts:
-            # Seul chemin inscriptible du conteneur. Tout le reste est en
-            # lecture seule, y compris le code.
-            - name: framework-storage
+            - name: app-config
+              mountPath: /opt/app-config
+              readOnly: true
+            - name: framework
               mountPath: /var/www/html/storage/framework
+            - name: tmp
+              mountPath: /tmp
 
+        - name: nginx
+          image: ghcr.io/openjbessa/api-nginx:placeholder
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          securityContext:
+            # Utilisateur de l'image nginx-unprivileged, différent de l'UID du
+            # pod : d'où ce remplacement au niveau du conteneur.
+            runAsUser: 101
+            runAsGroup: 101
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 48Mi
+
+          # Sondes TCP et non HTTP : une sonde HTTP sur nginx passerait par
+          # php-fpm et signalerait l'API en panne pour une raison qui n'est pas
+          # celle de ce conteneur. Les sondes applicatives sont sur php-fpm.
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 10
+
+          volumeMounts:
+            - name: nginx-tmp
+              mountPath: /tmp
+
+      # Tous sur disque et non en mémoire : un emptyDir `medium: Memory` est
+      # décompté du plafond mémoire du pod, ce qui rognerait les limites.
       volumes:
-        - name: framework-storage
+        # Cache de configuration, écrit par l'initContainer et lu en seule
+        # lecture par php-fpm.
+        - name: app-config
           emptyDir:
-            # Sur disque et non en mémoire : un emptyDir `medium: Memory` est
-            # décompté du plafond mémoire du pod, ce qui rognerait les 480 Mo.
-            sizeLimit: 128Mi
+            sizeLimit: 8Mi
+        # storage/framework : rien n'y écrit aujourd'hui — les vues compilées
+        # ont quitté ce chemin — mais Laravel s'attend à le trouver. Garde-fou.
+        - name: framework
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+        # pid et fichiers temporaires de nginx.
+        - name: nginx-tmp
+          emptyDir:
+            sizeLimit: 16Mi
 
       terminationGracePeriodSeconds: 30

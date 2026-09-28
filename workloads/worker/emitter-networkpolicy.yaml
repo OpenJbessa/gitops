@@ -1,0 +1,32 @@
+# Le générateur n'expose rien : personne ne l'appelle, il n'écoute sur aucun
+# port. Seules ses sorties comptent.
+#
+# Contrairement au consommateur, il a besoin des DEUX ports de `data` : Redis
+# pour émettre dans le stream et lire la clé `demo:burst`, PostgreSQL parce
+# qu'il porte la purge des comptes abandonnés depuis la suppression du CronJob.
+# C'est l'exacte symétrie du port 5432 retiré à `worker`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: emitter
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: emitter
+    app.kubernetes.io/part-of: workloads
+    app.kubernetes.io/managed-by: argocd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: emitter
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+      ports:
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 5432

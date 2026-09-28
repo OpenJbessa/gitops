@@ -117,7 +117,15 @@ def rendre(apps, depots, sortie: pathlib.Path) -> tuple[int, int, list[str]]:
                 morceaux.append(p.stdout)
 
             elif "path" in src:
-                p = run(["kubectl", "kustomize", str(RACINE / src["path"])])
+                # --enable-helm : `platform/teleport` inflate son chart par le
+                # générateur `helmCharts:` plutôt que par une source Helm
+                # d'ArgoCD, seule façon de patcher un initContainer codé en dur
+                # dans le chart. Le drapeau est posé sur tous les répertoires
+                # parce qu'il est sans effet sur ceux qui n'ont pas de
+                # `helmCharts:`, et qu'il reproduit `kustomize.buildOptions`
+                # du repo-server (cf. bootstrap/argocd-values.yaml).
+                p = run(["kubectl", "kustomize", "--enable-helm",
+                         str(RACINE / src["path"])])
                 if p.returncode:
                     err = (p.stderr or "").lower()
                     if "ksops" in err or "external plugins disabled" in err:

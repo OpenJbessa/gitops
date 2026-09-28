@@ -1,14 +1,22 @@
 # ---------------------------------------------------------------------------
-# Autoscaling du worker sur le retard du consumer group Redis.
+# Autoscaling du consommateur sur le retard du stream Redis.
 #
 # LE PLAFOND DE 4 N'EST PAS UN CHIFFRE ROND, IL DÉCOULE DU BUDGET MÉMOIRE :
 #   4 réplicas × 128 Mo de request = 512 Mo
-#   moins le réplica permanent déjà compté au budget  = +384 Mo au pic
-#   total de la plateforme au pic : 3 870 + 384 = 4 254 Mo sur 4 600 autorisés
-# Passer à 5 ferait sortir la plateforme de son enveloppe et mettrait le nœud
-# en pression mémoire — c'est-à-dire en éviction, probablement de PostgreSQL,
-# qui est la plus grosse charge du cluster. Ce plafond est une contrainte
-# physique, pas un réglage de confort.
+#   moins le réplica permanent déjà compté au repos = +384 Mo au pic
+#
+# Le total de la plateforme n'est pas recopié ici : il a déjà été faux deux
+# fois. La seule source de vérité est `scripts/check-budget.py`, qui le calcule
+# sur les manifests rendus et refuse de dépasser 4 600 Mo :
+#
+#   python3 scripts/render.py --out /tmp/rendered
+#   python3 scripts/check-budget.py --manifests /tmp/rendered
+#
+# Le script affiche la ligne « Au pic » en tenant compte de ce maxReplicaCount.
+# Passer à 5 ferait sortir la plateforme de son enveloppe et mettrait le nœud en
+# pression mémoire — c'est-à-dire en éviction, probablement de PostgreSQL, qui
+# est la plus grosse charge du cluster. Ce plafond est une contrainte physique,
+# pas un réglage de confort, et la CI le fait respecter.
 # ---------------------------------------------------------------------------
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
@@ -23,51 +31,86 @@ spec:
   scaleTargetRef:
     name: worker
 
-  # Jamais zéro : un worker à froid doit recharger tout le conteneur PHP avant
-  # de traiter son premier job. Garder un réplica permanent coûte 128 Mo et
-  # supprime cette latence de démarrage.
+  # Jamais zéro : un consommateur à froid doit recharger tout le conteneur PHP
+  # avant de traiter son premier lot. Garder un réplica permanent coûte 128 Mo
+  # et supprime cette latence de démarrage.
   minReplicaCount: 1
   maxReplicaCount: 4
 
-  # Interroge Redis toutes les 15 secondes. Plus court n'apporterait rien : le
-  # temps de démarrage d'un pod worker domine largement.
-  pollingInterval: 15
+  # 5 s et non 15. Pendant une rafale le retard croît de 100 entrées par seconde
+  # (150 émises, 50 traitées par un consommateur) : chaque tranche de 10 s de
+  # retard de détection coûte 1 000 entrées sur un MAXLEN de 10 000.
+  pollingInterval: 5
 
-  # Cinq minutes avant de redescendre. Une file est rarement lisse : sans cette
-  # inertie, le worker monterait et descendrait en permanence, et chaque cycle
-  # coûte un démarrage de conteneur complet.
+  # Sans effet tant que minReplicaCount vaut 1 : cooldownPeriod ne gouverne que
+  # le retour à zéro réplica. La descente réelle est réglée par le
+  # stabilizationWindowSeconds de scaleDown ci-dessous.
   cooldownPeriod: 300
 
   advanced:
     horizontalPodAutoscalerConfig:
       behavior:
-        scaleDown:
-          stabilizationWindowSeconds: 300
-          policies:
-            - type: Pods
-              value: 1
-              periodSeconds: 120
         scaleUp:
           stabilizationWindowSeconds: 0
           policies:
+            # De 1 à 4 en UNE étape. L'ancienne politique (+2 pods par minute)
+            # bloquait à 3 consommateurs pendant toute la rafale de 60 s : la
+            # montée arrivait après la fin de ce qu'elle devait absorber.
             - type: Pods
-              value: 2
-              periodSeconds: 60
+              value: 4
+              periodSeconds: 5
+        scaleDown:
+          # Deux minutes d'inertie, puis un pod toutes les 30 s : retour à un
+          # réplica environ 3 min 30 après que le retard est retombé. Chaque
+          # cycle de descente-remontée coûte un démarrage de conteneur complet.
+          stabilizationWindowSeconds: 120
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 30
 
   triggers:
-    - type: redis
+    - type: redis-streams
       metadata:
         address: redis.data.svc.cluster.local:6379
-        # Clé de la liste Laravel. Le pilote `redis` de la file écrit dans
-        # `{prefix}queues:{nom}` ; REDIS_PREFIX est fixé à une chaîne vide dans
-        # le ConfigMap de l'API pour que cette clé soit prévisible. Sans ça,
-        # Laravel préfixe d'après APP_NAME et KEDA observe une clé inexistante
-        # — le worker resterait à un réplica sans le moindre message d'erreur.
-        listName: queues:default
-        # Au-delà de 50 jobs en attente, on ajoute un réplica.
-        listLength: "50"
-        # En dessous de 5, la file est considérée comme vide : évite de monter
-        # en charge pour trois messages.
-        activationListLength: "5"
-        enableTLS: "false"
+        # Le stream et le groupe. REDIS_PREFIX est fixé à une chaîne vide dans
+        # le ConfigMap de l'API pour que ce nom soit prévisible : sans ça,
+        # Laravel préfixe d'après APP_NAME et KEDA observerait une clé
+        # inexistante — le consommateur resterait à un réplica sans le moindre
+        # message d'erreur.
+        stream: demo:events
+        consumerGroup: workers
+
+        # -------------------------------------------------------------------
+        # REPLI ASSUMÉ : `pendingEntriesCount` et non `lagCount`.
+        #
+        # `lagCount` est le bon critère — il mesure le retard réel du groupe,
+        # entrées pas encore distribuées comprises. Il n'est pas posé ici parce
+        # qu'il n'a pas pu être vérifié sur le cluster : le certificat Teleport
+        # du poste a expiré et son renouvellement demande une MFA interactive.
+        #
+        # CE QUE CE REPLI NE VOIT PAS : `pendingEntriesCount` ne compte que les
+        # entrées DISTRIBUÉES et non acquittées. Un consommateur ne réclame que
+        # ce qu'il peut traiter, donc ce nombre reste proche de la taille d'un
+        # lot même quand des milliers d'entrées attendent dans le stream. Avec
+        # un seuil de 500, la montée en charge peut tout simplement ne jamais se
+        # déclencher pendant une rafale.
+        #
+        # À BASCULER DÈS QUE LE CLUSTER EST JOIGNABLE. La vérification utile
+        # n'est pas `kubectl explain scaledobject.spec.triggers` : les métadonnées
+        # d'un déclencheur sont une map[string]string non typée dans la CRD, et
+        # `explain` ne dira donc jamais si `lagCount` est reconnu. Ce qui tranche,
+        # c'est le scaler de la version déployée :
+        #
+        #   kubectl -n keda get deploy keda-operator -o jsonpath='{..image}'
+        #   kubectl -n keda logs deploy/keda-operator | grep -i 'redis-streams\|lagCount'
+        #
+        # Puis remplacer les deux lignes ci-dessous par :
+        #   lagCount: "500"
+        # et retirer activationPendingEntriesCount, sans équivalent utile ici.
+        # -------------------------------------------------------------------
+        pendingEntriesCount: "500"
+        activationPendingEntriesCount: "5"
+
         databaseIndex: "0"
+        enableTLS: "false"

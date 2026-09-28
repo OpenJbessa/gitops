@@ -20,9 +20,8 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: data
       ports:
-        # Redis pour consommer la file, PostgreSQL parce qu'un job touche
-        # presque toujours la base.
+        # Redis seulement. Le port 5432 a été retiré : le consommateur de
+        # stream ne touche plus la base — c'est le générateur qui porte la
+        # purge, et il a sa propre policy (emitter-networkpolicy.yaml).
         - protocol: TCP
           port: 6379
-        - protocol: TCP
-          port: 5432

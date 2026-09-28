@@ -358,9 +358,21 @@ configs:
     reposerver.parallelism.limit: "1"
 
   cm:
-    # Indispensable à KSOPS : le plugin est un exécutable externe appelé par
-    # kustomize, ce que kustomize refuse sans ces deux drapeaux.
-    kustomize.buildOptions: "--enable-alpha-plugins --enable-exec"
+    # Les deux premiers drapeaux sont indispensables à KSOPS : le plugin est un
+    # exécutable externe appelé par kustomize, ce que kustomize refuse sans eux.
+    #
+    # `--enable-helm` autorise le générateur `helmCharts:` d'une kustomization.
+    # Un seul répertoire s'en sert, `platform/teleport`, et pour une seule
+    # raison : le chart teleport-cluster code en dur 256 Mo de requête sur
+    # l'initContainer `wait-auth-update` du proxy, qui ne fait qu'attendre une
+    # résolution DNS. Aucune valeur du chart ne l'expose, et une source Helm
+    # d'ArgoCD ne peut pas être patchée par une source kustomize : ce sont deux
+    # rendus indépendants, simplement concaténés. L'inflation par kustomize est
+    # la seule façon de poser ce patch sans vendoriser le chart.
+    #
+    # Le drapeau est global au repo-server. Il n'autorise rien de plus qu'un
+    # `helm template` que le repo-server sait déjà faire pour les sources Helm.
+    kustomize.buildOptions: "--enable-alpha-plugins --enable-exec --enable-helm"
 
     # 3 min au lieu de 3 min par défaut côté chart, mais explicite : c'est le
     # rythme auquel le repo-server recharge le dépôt sur un nœud partagé.

@@ -1,0 +1,37 @@
+# ---------------------------------------------------------------------------
+# GABARIT — ce fichier n'est PAS déployé et ne contient aucun secret.
+#
+# Jeton que vmagent présente à `GET /metrics` de l'API, monté en fichier dans
+# le pod vmagent (cf. extraVolumes dans agent-values.yaml) et lu par
+# `credentials_file` du job `api-demo`.
+#
+# ATTENTION — duplication à maintenir : la clé `token` ci-dessous doit être
+# IDENTIQUE à `METRICS_TOKEN` dans workloads/api/secrets.enc.yaml. Les secrets
+# Kubernetes ne traversent pas les namespaces, la même valeur est donc chiffrée
+# deux fois. Les faire diverger donne un 404 sur /metrics : la cible bascule en
+# `up == 0` et l'incident ressemble à une panne d'application, pas de collecte.
+#
+# Un fichier et non une variable d'environnement : `credentials_file` relit le
+# fichier, ce qui permet une rotation sans redémarrer vmagent.
+#
+# Procédure :
+#   export EDITOR=nano
+#   cd observability/victoriametrics
+#   cp metrics-token.example.yaml metrics-token.enc.yaml
+#   sops encrypt --in-place metrics-token.enc.yaml
+#   sops edit metrics-token.enc.yaml
+#
+# Génération : openssl rand -hex 32
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-metrics-token
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: vmagent
+    app.kubernetes.io/part-of: observability
+    app.kubernetes.io/managed-by: argocd
+type: Opaque
+stringData:
+  token: REMPLACER_IDENTIQUE_A_workloads/api/secrets.enc.yaml

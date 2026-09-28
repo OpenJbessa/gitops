@@ -98,6 +98,47 @@ server:
         - name: charges
           interval: 1m
           rules:
+            - alert: ConteneurProcheDeSaLimiteMemoire
+              # Un conteneur qui passe 85 % de sa limite est à un pic près de
+              # l'OOMKill. Sur ce cluster, l'OOMKill n'est pas visible en soi :
+              # le pod redémarre, la sonde repasse au vert, et seul le compteur
+              # kube_pod_container_status_restarts_total en garde la trace —
+              # que personne ne regarde en temps réel. Cette alerte prévient
+              # avant, pas après.
+              #
+              # RATIO ET NON SEUIL ABSOLU, contrairement à NoeudMemoireSaturee :
+              # ici les deux séries portent déjà les mêmes étiquettes
+              # d'identification (namespace, pod, container), la jointure est
+              # donc sûre. C'est aussi la seule forme qui marche pour vingt
+              # charges aux limites différentes, de 48 Mo pour nginx à 768 Mo
+              # pour PostgreSQL.
+              #
+              # `container != ""` écarte les séries d'agrégat du pod entier, qui
+              # n'ont pas de limite en face et produiraient une division par
+              # une série absente. Le job cAdvisor les jette déjà
+              # (metric_relabel_configs d'agent-values.yaml) : le filtre est ici
+              # pour que la règle reste juste si ce filtre-là bouge.
+              #
+              # 10 minutes : assez pour ignorer le pic de démarrage de PHP-FPM
+              # ou la synchronisation initiale du cache d'ArgoCD, tous deux
+              # normaux et brefs. Une vraie dérive dure plus longtemps.
+              expr: |-
+                container_memory_working_set_bytes{container!=""}
+                  / on (namespace, pod, container)
+                  kube_pod_container_resource_limits{resource="memory"}
+                  > 0.85
+              for: 10m
+              labels:
+                severity: warning
+              annotations:
+                summary: "{{ $labels.container }} ({{ $labels.pod }}) dépasse 85 % de sa limite mémoire"
+                description: >-
+                  {{ $value | humanizePercentage }} de la limite depuis
+                  10 minutes. Le prochain pic donnera un OOMKill : le conteneur
+                  redémarrera sans autre message que son compteur de
+                  redémarrages. Relever la limite sort du budget mémoire —
+                  vérifier d'abord s'il s'agit d'une fuite.
+
             - alert: PodEnCrashLoop
               expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} > 0
               for: 5m
@@ -127,24 +168,40 @@ server:
                   Le renouvellement automatique n'a pas abouti. Vérifier le
                   jeton Cloudflare et les journaux de cert-manager.
 
-        - name: file
+        - name: stream
           interval: 1m
           rules:
-            - alert: FileRedisEnRetard
-              # La métrique vient de KEDA, pas d'un exportateur Redis : le
-              # scaler publie déjà la longueur de liste qu'il lit pour décider
-              # de monter en charge. Réutiliser cette série évite un
-              # redis_exporter de 24 Mo.
-              expr: keda_scaler_metrics_value{scaledObject="worker"} > 500
-              for: 10m
+            - alert: StreamRedisProcheDeSonPlafond
+              # `demo_stream_lag`, publié par l'API, et non
+              # `keda_scaler_metrics_value` : cette dernière vaut ce que lit le
+              # déclencheur du ScaledObject, aujourd'hui le nombre d'entrées
+              # distribuées non acquittées (repli pendingEntriesCount, cf.
+              # workloads/worker/scaledobject.yaml). Ce n'est pas le retard, et
+              # cela changerait de sens le jour où le déclencheur passe à
+              # lagCount. `demo_stream_lag` mesure le retard réel quel que soit
+              # le scaler.
+              #
+              # Le seuil est l'approche de DEMO_STREAM_MAXLEN (10 000), pas la
+              # saturation des consommateurs. Au-delà de MAXLEN, XADD supprime
+              # des entrées NON LUES : Redis ne sait plus calculer le retard,
+              # `demo_stream_lag` disparaît, et la courbe du front avec elle.
+              # La perte est silencieuse, d'où une alerte avant et non après.
+              #
+              # 2 minutes et non 10 : à la vitesse de croissance d'une rafale
+              # (100 entrées/s), 5 000 entrées de marge sont consommées en
+              # moins d'une minute. Une fenêtre de 10 minutes préviendrait
+              # après coup.
+              expr: demo_stream_lag > 5000
+              for: 2m
               labels:
                 severity: warning
               annotations:
-                summary: "La file de jobs accumule du retard malgré 4 workers"
+                summary: "Le stream demo:events approche de MAXLEN"
                 description: >-
-                  {{ $value }} jobs en attente dans `queues:default` depuis
-                  10 minutes. Le plafond de 4 réplicas est atteint et ne peut
-                  pas être relevé sans sortir du budget mémoire.
+                  {{ $value }} entrées de retard depuis 2 minutes, sur un
+                  MAXLEN de 10 000. Le plafond de 4 consommateurs est atteint et
+                  ne peut pas être relevé sans sortir du budget mémoire. Au-delà
+                  de MAXLEN, les entrées non lues sont supprimées sans trace.
 
         - name: base
           interval: 1m

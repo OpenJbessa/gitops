@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+# Jeton de collecte de /metrics. Chiffré : voir metrics-token.example.yaml
+#
+# Jeton que vmagent présente à `GET /metrics` de l'API, monté en fichier dans
+# le pod vmagent (cf. extraVolumes dans agent-values.yaml) et lu par
+# `credentials_file` du job `api-demo`.
+#
+# ATTENTION — duplication à maintenir : la clé `token` ci-dessous doit être
+# IDENTIQUE à `METRICS_TOKEN` dans workloads/api/secrets.enc.yaml. Les secrets
+# Kubernetes ne traversent pas les namespaces, la même valeur est donc chiffrée
+# deux fois. Les faire diverger donne un 404 sur /metrics : la cible bascule en
+# `up == 0` et l'incident ressemble à une panne d'application, pas de collecte.
+#
+# Un fichier et non une variable d'environnement : `credentials_file` relit le
+# fichier, ce qui permet une rotation sans redémarrer vmagent.
+#
+# Procédure :
+#   export EDITOR=nano
+#   cd observability/victoriametrics
+#   cp metrics-token.example.yaml metrics-token.enc.yaml
+#   sops encrypt --in-place metrics-token.enc.yaml
+#   sops edit metrics-token.enc.yaml
+#
+# Génération : openssl rand -hex 32
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+    name: api-metrics-token
+    namespace: observability
+    labels:
+        app.kubernetes.io/name: vmagent
+        app.kubernetes.io/part-of: observability
+        app.kubernetes.io/managed-by: argocd
+type: Opaque
+stringData:
+    token: ENC[AES256_GCM,data:InU+Q2f1Brr9LhkzH5A1Y1HdIKHJptukDJsR1gOUoVW9nRGkeBLgS5KkG6NrNbhmgR6vgD1Txf7xTAAxSgKVUg==,iv:6NHlzDYjZtufkDkU27LEu0Bh9e/HZ+zRjgpJpnptLaM=,tag:qY14sdrgCAOD9Mc0hOHH+A==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age:
+        - recipient: age176srtrvy8x2wrrfsxfjvg5zzg5pke3repy5ma6yhv8v24h4weenq09k93y
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSA0dVJNQ3pKRFgyZGZDRUZ6
+            U0tiTnhuSkpjSUNnYjZ6a3M2S1pXclY0OEdzCnVxSms1N0JpbXVZMmwzeW1LWlR1
+            a0c0WVVuQVJmTzRjSFd3b0dXYlByTlEKLS0tIDJmYVFWZkRCNmRLV3Jyb2xadUZ6
+            YldhbnZ5eXEyUzgra1hMZGUxMncvazgKilSlQ/mP9svR8I+HrJ82lvsTI0PokACh
+            qV2NURPT/9kgpF8DjvJ+IjBz7rAxXcwLuJqlWSQO9mCoH9dqcgxFAw==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-09-28T09:59:00Z"
+    mac: ENC[AES256_GCM,data:w5o2h5mJhgFWxtxkbnOAWFkhw/g8CYOklnKK+DMJ+cih+zFprztd1CdiYFTglppF8meqYIRHKokSA93nzfgk0ZjIB5Ut9s/yIXeZb+gaad0mOhOzJgdJuVS6pQsuQiofQc/e0kTN7TbiPJR4nSs1zsD/PH7TmXe/luaNcqJu9mg=,iv:g7XjS2a3LEF8TSNecrWvBFSMwWu6Wli3TsIFUWQ5Y8I=,tag:umDz1zA8sBDqueHWXG248A==,type:str]
+    pgp: []
+    encrypted_regex: ^(data|stringData)$
+    version: 3.9.4

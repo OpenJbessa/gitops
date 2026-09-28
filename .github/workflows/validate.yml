@@ -146,9 +146,32 @@ jobs:
                       if not re.fullmatch(r"v?\d+\.\d+\.\d+", v):
                           echec.append(f"{f}: {s['chart']} -> '{v}' n'est pas une version exacte")
 
+          # Versions de charts inflatés par kustomize (helmCharts:). Teleport y
+          # est passé pour pouvoir patcher un initContainer codé en dur dans le
+          # chart ; sans ce bloc, sa version sortait du contrôle d'épinglage en
+          # même temps qu'elle sortait de spec.sources[].chart.
+          for f in sorted(pathlib.Path(".").rglob("kustomization.yaml")):
+              # `charts/` contient les charts téléchargés par le générateur
+              # helmCharts, avec leurs propres kustomizations d'exemple. Ils ne
+              # sont pas du dépôt et ne sont jamais committés (cf. .gitignore).
+              if "charts" in f.parts:
+                  continue
+              d = yaml.safe_load(f.read_text())
+              if not isinstance(d, dict):
+                  continue
+              for c in d.get("helmCharts") or []:
+                  v = str(c.get("version", ""))
+                  if not re.fullmatch(r"v?\d+\.\d+\.\d+", v):
+                      echec.append(f"{f}: {c.get('name')} -> '{v}' n'est pas une version exacte")
+
           # Tags d'images dans les manifests
           for base in ("platform", "data", "workloads", "observability", "bootstrap"):
               for f in sorted(pathlib.Path(base).rglob("*.yaml")):
+                  # Même raison que ci-dessus : le contenu d'un chart amont
+                  # n'est pas à épingler par ce dépôt, et ses gabarits Helm ne
+                  # sont de toute façon pas du YAML à analyser.
+                  if "charts" in f.parts:
+                      continue
                   for n, ligne in enumerate(f.read_text().splitlines(), 1):
                       m = re.search(r'^\s*(?:-\s+)?image:\s*["\']?([^\s"\']+)', ligne)
                       if not m:

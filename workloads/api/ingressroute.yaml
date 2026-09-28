@@ -12,7 +12,14 @@ spec:
     - websecure
   routes:
     - kind: Rule
-      match: Host(`api.jbessa.tech`)
+      # /metrics est exclu de la route publique. C'est la première de trois
+      # barrières, et la seule qui coupe le trafic avant d'entrer dans le pod :
+      # nginx répond 404 à toute requête /metrics portant X-Forwarded-For (donc
+      # passée par Traefik), et l'application exige un jeton Bearer.
+      #
+      # vmagent atteint /metrics en visant le pod directement, sans passer par
+      # Traefik : cette exclusion ne le gêne pas.
+      match: Host(`api.jbessa.tech`) && !Path(`/metrics`)
       services:
         - name: api
           port: 8080
