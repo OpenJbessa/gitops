@@ -47,13 +47,21 @@ prometheus:
   enabled: true
   # Pas de ServiceMonitor : l'opérateur Prometheus est hors périmètre, vmagent
   # découvre les cibles par les annotations de pod.
+  #
+  # C'est cette combinaison — `prometheus.enabled` vrai, servicemonitor et
+  # podmonitor faux — qui fait poser au chart lui-même les annotations
+  # prometheus.io/{path,scrape,port} sur le pod du contrôleur
+  # (templates/deployment.yaml). Il n'y a donc RIEN à ajouter sous
+  # `podAnnotations` : on y avait recopié les trois mêmes clés, et le rendu
+  # sortait un mapping YAML avec chaque clé deux fois.
+  #
+  # Kubernetes l'aurait accepté — la dernière valeur gagne — mais `kubeconform
+  # -strict` refuse : « key "prometheus.io/path" already set in map ». Le chart
+  # aggrave le piège en omettant `annotations:` dès que `podAnnotations` est
+  # non vide, en supposant qu'il a déjà ouvert la clé : le doublon est produit
+  # par le chart, mais seulement si on lui donne de quoi le produire.
   servicemonitor:
     enabled: false
-
-podAnnotations:
-  prometheus.io/scrape: "true"
-  prometheus.io/port: "9402"
-  prometheus.io/path: "/metrics"
 
 webhook:
   replicaCount: 1

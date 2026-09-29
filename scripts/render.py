@@ -8,16 +8,31 @@ de toucher à la CI.
 
 Les répertoires contenant un secret SOPS ne peuvent pas être rendus ici : le
 déchiffrement exige la clé age privée, qui n'a rien à faire dans un runner
-GitHub. Ils sont comptés à part et vérifiés autrement (scripts/check-secrets.sh).
+GitHub, ni sur un poste pour un simple aperçu. Ils sont ignorés en silence.
+
+DEUX MODES, UN SEUL PLAN DE RENDU
+---------------------------------
+Ce script rend avec le helm et le kustomize de la machine. C'est rapide, et
+c'est ce qu'on veut pour itérer — mais ce n'est PAS ce que rend le cluster : le
+repo-server d'ArgoCD a ses propres binaires, et une incompatibilité entre eux ne
+se voit pas ici (cf. docs/adr/0001).
+
+`--plan` sert exactement à ça : au lieu d'exécuter, le script émet en JSON la
+liste des commandes à passer, avec des chemins relatifs à la racine du dépôt.
+`scripts/render-argocd.sh` la reprend et l'exécute DANS l'image du repo-server.
+La logique de découverte — Applications, sources, fichiers de valeurs, préfixe
+$values — n'existe donc qu'ici, en un seul endroit, quel que soit l'exécutant.
 
 Usage :
     scripts/render.py --out /tmp/rendered
+    scripts/render.py --plan
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import pathlib
 import subprocess
 import sys
@@ -117,7 +132,15 @@ def rendre(apps, depots, sortie: pathlib.Path) -> tuple[int, int, list[str]]:
                 morceaux.append(p.stdout)
 
             elif "path" in src:
-                p = run(["kubectl", "kustomize", str(RACINE / src["path"])])
+                # --enable-helm : `platform/teleport` inflate son chart par le
+                # générateur `helmCharts:` plutôt que par une source Helm
+                # d'ArgoCD, seule façon de patcher un initContainer codé en dur
+                # dans le chart. Le drapeau est posé sur tous les répertoires
+                # parce qu'il est sans effet sur ceux qui n'ont pas de
+                # `helmCharts:`, et qu'il reproduit `kustomize.buildOptions`
+                # du repo-server (cf. bootstrap/argocd-values.yaml).
+                p = run(["kubectl", "kustomize", "--enable-helm",
+                         str(RACINE / src["path"])])
                 if p.returncode:
                     err = (p.stderr or "").lower()
                     if "ksops" in err or "external plugins disabled" in err:
@@ -145,15 +168,65 @@ def rendre(apps, depots, sortie: pathlib.Path) -> tuple[int, int, list[str]]:
     return ok, ignore, echecs
 
 
+def plan(apps) -> list[dict]:
+    """Le plan de rendu, en chemins RELATIFS à la racine du dépôt.
+
+    Il décrit quoi rendre, pas comment ni avec quels binaires. C'est ce qui
+    permet à render-argocd.sh de l'exécuter dans l'image du repo-server sans
+    redéclarer la découverte des Applications.
+    """
+    entrees = []
+    for chemin, app in apps:
+        nom = app["metadata"]["name"]
+        ns = app["spec"]["destination"]["namespace"]
+        etapes: list[dict] = []
+        for src in sources(app):
+            if "chart" in src:
+                helm = src.get("helm") or {}
+                valeurs = []
+                for vf in helm.get("valueFiles", []):
+                    if not vf.startswith(PREFIXE_VALUES):
+                        raise SystemExit(
+                            f"{nom} : valueFiles sans préfixe {PREFIXE_VALUES} : {vf}"
+                        )
+                    valeurs.append(vf[len(PREFIXE_VALUES):])
+                etapes.append({
+                    "type": "helm",
+                    "release": helm.get("releaseName", nom),
+                    "repo": src["repoURL"],
+                    "chart": src["chart"],
+                    "version": src["targetRevision"],
+                    "namespace": ns,
+                    "valeurs": valeurs,
+                    "skipTests": bool(helm.get("skipTests")),
+                })
+            elif "path" in src:
+                etapes.append({"type": "kustomize", "chemin": src["path"]})
+        if etapes:
+            entrees.append({"nom": nom, "etapes": etapes})
+    return entrees
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="/tmp/rendered", type=pathlib.Path)
+    ap.add_argument(
+        "--plan",
+        action="store_true",
+        help="Émet le plan de rendu en JSON sur la sortie standard, sans rien "
+             "exécuter. Consommé par scripts/render-argocd.sh, qui l'exécute "
+             "avec les binaires du repo-server.",
+    )
     args = ap.parse_args()
 
     apps = applications()
     if not apps:
         print("Aucune Application trouvée sous apps/", file=sys.stderr)
         return 1
+
+    if args.plan:
+        json.dump(plan(apps), sys.stdout, ensure_ascii=False)
+        return 0
 
     print(f"{len(apps)} Applications découvertes\n")
     depots = ajouter_depots(apps)

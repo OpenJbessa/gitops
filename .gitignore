@@ -19,6 +19,17 @@ keys.txt
 kubeconfig
 *.kubeconfig
 
+# Charts téléchargés par le générateur `helmCharts:` de kustomize.
+#
+# CECI EST UNE RÈGLE DE PRINCIPE, PAS UNE COMMODITÉ. `kustomize build
+# --enable-helm` fait un `helm pull` et dépose le chart dans un répertoire
+# `charts/` à côté de la kustomization — 198 fichiers pour teleport-cluster.
+# Les committer vendoriserait le chart, ce que ce dépôt refuse explicitement
+# (cf. « Aucun chart vendorisé » en tête du README). Le chart est retéléchargé
+# à chaque rendu, ici comme dans le repo-server d'ArgoCD, et n'existe jamais
+# que dans une copie de travail.
+charts/
+
 # Artefacts locaux
 .DS_Store
 *.swp

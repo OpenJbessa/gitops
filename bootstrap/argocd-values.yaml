@@ -185,13 +185,30 @@ repoServer:
       # « exec: /bin/sh: no such file or directory », avant même que la commande
       # ne soit lue.
       #
-      # Le binaire sait donc se déployer lui-même : `ksops install` copie ksops
-      # et, avec --with-kustomize, la version de kustomize compatible avec son
-      # API de plugin. C'est la méthode retenue en amont depuis la v4.4.
+      # Le binaire sait donc se déployer lui-même : `ksops install` le copie à
+      # l'emplacement donné. C'est la méthode retenue en amont depuis la v4.4.
+      #
+      # PAS DE `--with-kustomize`, et c'est un choix mesuré. Ce drapeau installe
+      # aussi le kustomize que KSOPS embarque — v5.3.0 pour KSOPS v4.5.1 — et on
+      # le montait par-dessus celui de l'image ArgoCD. Or ce kustomize-là est
+      # incompatible avec le helm de l'image : il détecte Helm par
+      # `helm version -c --short`, et Helm 4 a supprimé la forme courte `-c`.
+      # Toute kustomization utilisant `helmCharts:` — c'est le cas de
+      # platform/teleport — échoue alors sur :
+      #
+      #   Error: unknown shorthand flag: 'c' in -c
+      #   unable to run: 'helm version -c --short' (is 'helm' installed?)
+      #
+      # Le kustomize de l'image (v5.8.1 pour argocd v3.5.3) n'a pas ce défaut et
+      # exécute parfaitement le plugin ksops : vérifié en rendant
+      # observability/victoriametrics avec la clé age, les deux secrets sont
+      # déchiffrés. L'API de plugin exec est stable entre ces versions.
+      #
+      # À REVÉRIFIER à chaque montée de KSOPS ou d'ArgoCD : la compatibilité
+      # repose désormais sur le kustomize d'ArgoCD, pas sur celui de KSOPS.
       command:
         - /usr/local/bin/ksops
         - install
-        - --with-kustomize
         - /custom-tools
       volumeMounts:
         - name: custom-tools
@@ -227,11 +244,9 @@ repoServer:
             path: keys.txt
 
   volumeMounts:
-    # Le kustomize fourni par KSOPS remplace celui de l'image ArgoCD : les deux
-    # doivent partager la même version d'API de plugin.
-    - name: custom-tools
-      mountPath: /usr/local/bin/kustomize
-      subPath: kustomize
+    # Seul le binaire ksops est monté. Le kustomize de l'image ArgoCD n'est PAS
+    # remplacé : voir le commentaire de l'initContainer ci-dessus, celui de
+    # KSOPS casse le générateur `helmCharts:` avec Helm 4.
     - name: custom-tools
       mountPath: /usr/local/bin/ksops
       subPath: ksops
@@ -358,9 +373,21 @@ configs:
     reposerver.parallelism.limit: "1"
 
   cm:
-    # Indispensable à KSOPS : le plugin est un exécutable externe appelé par
-    # kustomize, ce que kustomize refuse sans ces deux drapeaux.
-    kustomize.buildOptions: "--enable-alpha-plugins --enable-exec"
+    # Les deux premiers drapeaux sont indispensables à KSOPS : le plugin est un
+    # exécutable externe appelé par kustomize, ce que kustomize refuse sans eux.
+    #
+    # `--enable-helm` autorise le générateur `helmCharts:` d'une kustomization.
+    # Un seul répertoire s'en sert, `platform/teleport`, et pour une seule
+    # raison : le chart teleport-cluster code en dur 256 Mo de requête sur
+    # l'initContainer `wait-auth-update` du proxy, qui ne fait qu'attendre une
+    # résolution DNS. Aucune valeur du chart ne l'expose, et une source Helm
+    # d'ArgoCD ne peut pas être patchée par une source kustomize : ce sont deux
+    # rendus indépendants, simplement concaténés. L'inflation par kustomize est
+    # la seule façon de poser ce patch sans vendoriser le chart.
+    #
+    # Le drapeau est global au repo-server. Il n'autorise rien de plus qu'un
+    # `helm template` que le repo-server sait déjà faire pour les sources Helm.
+    kustomize.buildOptions: "--enable-alpha-plugins --enable-exec --enable-helm"
 
     # 3 min au lieu de 3 min par défaut côté chart, mais explicite : c'est le
     # rythme auquel le repo-server recharge le dépôt sur un nœud partagé.

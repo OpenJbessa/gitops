@@ -5,8 +5,16 @@
 # On rouvre ici uniquement ce dont le cluster a besoin.
 # ---------------------------------------------------------------------------
 
-# API et worker vers la base. Sélection par label de pod et non par namespace
-# entier : le front Nuxt vit dans le même namespace et n'a rien à faire ici.
+# API et générateur vers la base. Sélection par label de pod et non par
+# namespace entier : le front Nuxt vit dans le même namespace et n'a rien à
+# faire ici.
+#
+# `worker` a été retiré de la liste : le consommateur de stream ne touche plus
+# la base. C'est le générateur qui porte la purge des comptes abandonnés depuis
+# la suppression du CronJob, d'où `emitter` à sa place.
+#
+# Le Job de migration porte le label `app.kubernetes.io/name: api` : il est
+# couvert par la première valeur, et c'est délibéré.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -33,7 +41,7 @@ spec:
                 operator: In
                 values:
                   - api
-                  - worker
+                  - emitter
       ports:
         - protocol: TCP
           port: 5432

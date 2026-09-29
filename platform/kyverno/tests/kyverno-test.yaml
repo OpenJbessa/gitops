@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# Épreuve des ClusterPolicy, par `kyverno test`.
+#
+# Remplace le `kyverno validate` de la CI, qui n'existe plus : la sous-commande
+# a disparu de la CLI Kyverno, et la tâche échouait donc sur « unknown command
+# validate » depuis la montée de version. Un contrôle qui ne passe plus depuis
+# assez longtemps pour qu'on l'oublie ne vaut pas mieux qu'un contrôle absent —
+# celui-ci vérifie un comportement, pas seulement une syntaxe.
+#
+# CE QUE CE TEST NE COUVRE PAS. La paire « image signée acceptée / image non
+# signée refusée » n'y figure pas, et c'est délibéré. La vérification keyless
+# exige un accès au registre et à Rekor, que la CLI désactive par défaut : sans
+# `--registry`, toute image du motif `ghcr.io/openjbessa/*` produit un `error`
+# — « je ne peux pas vérifier » — et non un `fail`. Asserter cet `error`
+# reviendrait à tester que l'accès registre est coupé, pas que la signature est
+# exigée. Et un vrai `fail` demanderait une image RÉELLE, publiée sous ce
+# préfixe et non signée, qu'il faudrait maintenir exprès.
+#
+# Ce qui est éprouvé de la policy de signature est donc sa FRONTIÈRE : une image
+# amont n'est pas concernée. C'est la moitié vérifiable hors ligne, et c'est
+# celle dont la régression serait la plus brutale — un motif trop large bloque
+# tout le cluster à l'admission.
+#
+# Pour éprouver la signature pour de vrai, contre le registre, hors CI :
+#   kyverno apply platform/kyverno/policies/verify-images.yaml \
+#     --resource platform/kyverno/tests/resources.yaml --registry
+# ---------------------------------------------------------------------------
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: policies-du-cluster
+policies:
+  - ../policies/require-hardened-pods.yaml
+  - ../policies/verify-images.yaml
+resources:
+  - resources.yaml
+results:
+  # --- Durcissement des pods ------------------------------------------------
+  - policy: require-hardened-pods
+    rule: require-read-only-root-filesystem
+    resources: [pod-conforme]
+    kind: Pod
+    result: pass
+
+  - policy: require-hardened-pods
+    rule: require-read-only-root-filesystem
+    resources: [pod-racine-inscriptible]
+    kind: Pod
+    result: fail
+
+  - policy: require-hardened-pods
+    rule: disallow-privilege-escalation
+    resources: [pod-conforme]
+    kind: Pod
+    result: pass
+
+  - policy: require-hardened-pods
+    rule: disallow-privilege-escalation
+    resources: [pod-elevation-autorisee]
+    kind: Pod
+    result: fail
+
+  - policy: require-hardened-pods
+    rule: require-run-as-non-root
+    resources: [pod-conforme]
+    kind: Pod
+    result: pass
+
+  # --- Frontière de la vérification de signature ----------------------------
+  - policy: verify-image-signatures
+    rule: verify-ghcr-openjbessa
+    resources: [pod-image-amont]
+    kind: Pod
+    result: skip

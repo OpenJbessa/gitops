@@ -35,6 +35,22 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    # vmagent collecte /metrics sur le même port. La collecte ne passe pas par
+    # Traefik — elle vise le pod directement — donc la règle Traefik ci-dessus
+    # ne la couvre pas. Le label est celui que pose le chart
+    # victoria-metrics-agent 0.47.0 : `victoria-metrics-agent`, le nom du
+    # chart, et non `vmagent` qui n'est que le nom de la release
+    # (`app.kubernetes.io/instance`). Vérifié au rendu.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: victoria-metrics-agent
+      ports:
+        - protocol: TCP
+          port: 8080
   egress:
     - to:
         - namespaceSelector:
@@ -45,16 +61,42 @@ spec:
           port: 5432
         - protocol: TCP
           port: 6379
-    # Sortie Internet — délibérément fermée. À ouvrir le jour où l'API appellera
-    # un service tiers (envoi d'e-mails, paiement, API externe) ; sans cette
-    # règle l'appel échoue par expiration de délai, sans message explicite.
-    # - to:
-    #     - ipBlock:
-    #         cidr: 0.0.0.0/0
-    #         except:
-    #           - 10.0.0.0/8
-    #           - 172.16.0.0/12
-    #           - 192.168.0.0/16
-    #   ports:
-    #     - protocol: TCP
-    #       port: 443
+    # Les endpoints /status, /infrastructure et /scaling de l'API rapportent
+    # l'état de la plateforme : ils lisent Gatus (8080) pour les sondes publiques
+    # et VictoriaMetrics (8428) pour l'état des pods et des réplicas. Sans cette
+    # règle l'appel n'échoue pas franchement, il expire — et les trois endpoints
+    # répondent 503 sans que rien n'apparaisse côté cluster.
+    #
+    # Pas de jumelle côté `observability` : ce namespace ne porte pas de refus
+    # par défaut (cf. platform/namespaces/default-deny.yaml).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8428
+    # Sortie Internet, ouverte pour le retour OAuth. Le navigateur revient sur
+    # /auth/{github,google}/callback avec un code ; c'est l'API qui l'échange
+    # contre un jeton, côté serveur, auprès de github.com, api.github.com,
+    # oauth2.googleapis.com et openidconnect.googleapis.com.
+    #
+    # Sans cette règle la connexion sociale échoue par expiration de délai, et
+    # le visiteur revient sur /demo?erreur=social sans qu'aucun message
+    # n'apparaisse côté cluster.
+    #
+    # Les plages privées restent exclues : une sortie 443 ouverte à 0.0.0.0/0
+    # sans ces exceptions donnerait aussi accès au kube-apiserver et aux
+    # services internes du nœud.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

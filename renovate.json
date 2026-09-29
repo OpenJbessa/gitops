@@ -15,6 +15,11 @@
     "managerFilePatterns": ["/^apps/.+\\.ya?ml$/"]
   },
 
+  "kustomize": {
+    "description": "Charts inflatés par kustomize (helmCharts:) plutôt que portés par une Application. Un seul aujourd'hui : platform/teleport, passé en inflation pour patcher un initContainer codé en dur dans le chart. Sans ce bloc, sa version sortirait du suivi Renovate en même temps qu'elle sort de spec.sources[].chart.",
+    "managerFilePatterns": ["/(^|/)kustomization\\.ya?ml$/"]
+  },
+
   "kubernetes": {
     "description": "Images référencées dans les manifests bruts.",
     "managerFilePatterns": [
@@ -34,6 +39,23 @@
       ],
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+.*?image:\\s*\\S+:(?<currentValue>[^\\s\"']+)"
+      ],
+      "versioningTemplate": "semver"
+    },
+    {
+      "description": "Catalogue de schémas CRD, épinglé à un commit dans scripts/render-argocd.sh. Un contrôle de conformité qui suit une branche n'est pas un contrôle : son verdict changerait sans qu'aucun commit du dépôt ne bouge. Renovate fait avancer le digest par pull request relue, et la tâche pinning refuse tout retour à une branche.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^scripts/render-argocd\\.sh$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+packageName=(?<packageName>\\S+)\\s+currentValue=(?<currentValue>\\S+)\\s*\\n\\s*\\w+=\"(?<currentDigest>[0-9a-f]{40})\""
+      ]
+    },
+    {
+      "description": "Versions d'outils de la CI, déclarées en env de validate.yml. Elles décident d'un échec au même titre qu'un chart : elles sont épinglées et suivies.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n\\s*\\w+:\\s*(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"
       ],
       "versioningTemplate": "semver"
     }
@@ -59,6 +81,13 @@
       "matchPackageNames": ["cloudnative-pg"],
       "addLabels": ["impact-base-de-donnees"],
       "minimumReleaseAge": "14 days"
+    },
+    {
+      "description": "ArgoCD, KSOPS et Helm forment la chaîne d'outils du repo-server, et leurs versions ne sont compatibles que deux à deux : KSOPS v4.5.1 livrait un kustomize v5.3.0 que Helm 4 a cassé, sans qu'aucun manifeste change (docs/adr/0001). Ces montées ne fusionnent jamais automatiquement, et la tâche `render-argocd` — qui rend le dépôt dans l'image du repo-server — doit être verte. Elle est à déclarer comme contrôle requis dans la protection de branche : Renovate ne peut pas l'imposer seul.",
+      "matchPackageNames": ["argo-cd", "viaductoss/ksops", "quay.io/argoproj/argocd", "getsops/sops"],
+      "automerge": false,
+      "minimumReleaseAge": "7 days",
+      "addLabels": ["chaine-repo-server", "render-argocd-requis"]
     },
     {
       "description": "Teleport : les clients tsh doivent rester dans une majeure de l'instance. Une montée majeure impose de mettre à jour l'agent de l'hôte, installé hors GitOps.",

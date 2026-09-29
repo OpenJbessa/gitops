@@ -20,32 +20,22 @@ metadata:
 spec:
   project: default
 
-  sources:
-    - repoURL: https://github.com/OpenJbessa/gitops.git
-      targetRevision: main
-      ref: values
-
-    - repoURL: https://charts.releases.teleport.dev
-      chart: teleport-cluster
-      targetRevision: 18.10.0
-      helm:
-        # Posé sur toutes les sources Helm du dépôt par précaution : un chart
-        # peut introduire des Jobs sous templates/tests/ à n'importe quelle
-        # montée de version, et ArgoCD les traiterait comme des hooks bloquants.
-        #
-        # Attention, ce drapeau NE couvre PAS les Jobs `teleport-*-test` de ce
-        # chart : malgré leur nom, ce sont des hooks pre-install de validation
-        # de configuration, pas des tests. Ce qui les bloquait était le profil
-        # PSA du namespace — voir platform/namespaces/namespaces.yaml.
-        skipTests: true
-        releaseName: teleport
-        valueFiles:
-          - $values/platform/teleport/values.yaml
-
-    # IngressRouteTCP en passthrough + purge des enregistrements de sessions.
-    - repoURL: https://github.com/OpenJbessa/gitops.git
-      targetRevision: main
-      path: platform/teleport
+  # Source unique, contrairement à toutes les autres Applications du dépôt.
+  #
+  # Le chart teleport-cluster n'est pas tiré par ArgoCD mais inflaté par
+  # kustomize depuis `platform/teleport/kustomization.yaml`, qui l'épingle en
+  # 18.10.0 et lui passe `values.yaml`. La raison tient en une phrase : une
+  # source Helm et une source kustomize sont rendues indépendamment puis
+  # concaténées, donc la seconde ne peut pas patcher la première — et il faut
+  # patcher l'initContainer `wait-auth-update`, dont les 256 Mo de requête sont
+  # codés en dur dans le chart. Le détail est dans la kustomization.
+  #
+  # Ce répertoire porte donc à la fois le chart, l'IngressRouteTCP en
+  # passthrough, la purge des enregistrements et le rôle platform-admin.
+  source:
+    repoURL: https://github.com/OpenJbessa/gitops.git
+    targetRevision: main
+    path: platform/teleport
 
   destination:
     server: https://kubernetes.default.svc
