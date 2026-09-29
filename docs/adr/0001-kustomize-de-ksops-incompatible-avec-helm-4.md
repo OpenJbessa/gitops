@@ -155,7 +155,31 @@ Deux angles morts disparaissent au passage :
   retirerait la validation de tout le reste de la ressource — le script récupère
   le schéma amont et en retire les cinq `format: duration`, tous des durées
   Teleport. Rien n'est vendorisé : le schéma corrigé est régénéré à chaque
-  exécution, et une évolution du CRD est reprise automatiquement.
+  exécution.
+
+### Le catalogue de schémas est épinglé, lui aussi
+
+Une dernière référence flottait : `kubeconform` tirait les schémas de CRD depuis
+la branche `main` de CRDs-catalog, et le correctif du schéma Teleport aussi.
+C'est la même faute que celles ci-dessus, dans une autre matière — ce qui décide
+d'un échec de la CI doit être épinglé, sinon le verdict change sans qu'aucun
+commit du dépôt ne bouge.
+
+Le cas gênant n'est pas qu'une pull request devienne rouge du jour au lendemain.
+C'est l'inverse : un schéma assoupli en amont laisse passer ce qu'il refusait la
+veille, sans que personne ne l'apprenne. Un contrôle qui se relâche tout seul est
+pire qu'un contrôle absent, parce qu'on continue de compter dessus.
+
+Le SHA est déclaré une fois dans `scripts/render-argocd.sh`, sous une annotation
+`# renovate: datasource=git-refs`, et sert aux deux usages — sans quoi le
+correctif porterait sur une version du schéma et la validation sur une autre.
+Un gestionnaire regex de `renovate.json` fait avancer le digest.
+
+`pinning` refuse quatre choses désormais : une référence de schéma sur une
+branche, une variable de référence qui ne vaut pas un SHA, un SHA sans
+annotation Renovate — épinglé pour de bon ne vaut pas mieux que flottant — et
+une clé dupliquée dans le workflow, que `yaml.safe_load` avalait en silence.
+Les quatre ont été éprouvées par régression volontaire avant d'être retenues.
 
 ## Conséquences
 

@@ -41,6 +41,23 @@
         "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+.*?image:\\s*\\S+:(?<currentValue>[^\\s\"']+)"
       ],
       "versioningTemplate": "semver"
+    },
+    {
+      "description": "Catalogue de schémas CRD, épinglé à un commit dans scripts/render-argocd.sh. Un contrôle de conformité qui suit une branche n'est pas un contrôle : son verdict changerait sans qu'aucun commit du dépôt ne bouge. Renovate fait avancer le digest par pull request relue, et la tâche pinning refuse tout retour à une branche.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^scripts/render-argocd\\.sh$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+packageName=(?<packageName>\\S+)\\s+currentValue=(?<currentValue>\\S+)\\s*\\n\\s*\\w+=\"(?<currentDigest>[0-9a-f]{40})\""
+      ]
+    },
+    {
+      "description": "Versions d'outils de la CI, déclarées en env de validate.yml. Elles décident d'un échec au même titre qu'un chart : elles sont épinglées et suivies.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n\\s*\\w+:\\s*(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"
+      ],
+      "versioningTemplate": "semver"
     }
   ],
 

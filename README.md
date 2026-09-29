@@ -68,7 +68,7 @@ ne peut donc rien exfiltrer, ce qui compte sur un dépôt public.
 | `secrets` | Clé privée committée, `.enc.yaml` non chiffré, `Secret` en clair, placeholder oublié. Tourne en premier : sur un dépôt public, une valeur poussée est compromise définitivement. |
 | `render-argocd` | **Le rendu qui fait foi.** Reproduit le repo-server avec *ses* binaires — image ArgoCD déployée, binaire ksops installé comme le fait l'initContainer, `kustomize.buildOptions` lues dans `argocd-cm` — rend les vingt Applications, puis valide la sortie avec `kubeconform` contre les schémas de l'API et des CRD. |
 | `budget` | Calcule la réservation mémoire réelle, `max(conteneurs, initContainers) × réplicas`, et échoue au-dessus de 4 600 Mio — pic d'autoscaling inclus. |
-| `pinning` | Version de chart flottante, version d'outil de CI non épinglée ou codée en dur dans un `run:`, image sans tag ou en `latest`. |
+| `pinning` | Version de chart flottante, version d'outil de CI non épinglée ou codée en dur dans un `run:`, catalogue de schémas suivi sur une branche, SHA sans annotation Renovate, image sans tag ou en `latest`, clé dupliquée dans le workflow. |
 | `policies` | `kyverno test` : ce que les ClusterPolicy refusent et ce qu'elles laissent passer, avec une CLI dont la version est vérifiée égale au Kyverno déployé. |
 | `renovate` | `renovate-config-validator --strict`. |
 
@@ -87,6 +87,14 @@ ne l'a vu :
 exécution et fabrique des secrets factices depuis les gabarits `*.example.yaml`.
 Effet de bord utile — les trois Applications qui exigeaient un secret SOPS, et
 qui n'étaient donc **ni rendues ni validées nulle part**, le sont ici.
+
+**Le catalogue de schémas CRD est épinglé à un commit**, pas suivi sur `main`.
+Un contrôle de conformité qui suit une branche n'en est pas un : son verdict
+change sans qu'aucun commit du dépôt ne bouge, et le cas dangereux n'est pas
+qu'une pull request rougisse — c'est qu'un schéma assoupli en amont laisse
+passer ce qu'il refusait la veille. Le SHA vit dans `scripts/render-argocd.sh`,
+sert aussi bien à `kubeconform` qu'au correctif du schéma Teleport, et Renovate
+le fait avancer par pull request relue comme il le ferait d'un chart.
 
 > **Réglage hors dépôt à poser** : déclarer `render-argocd` comme contrôle requis
 > dans la protection de branche de `main`. `renovate.json` refuse la fusion

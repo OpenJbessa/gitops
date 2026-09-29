@@ -26,7 +26,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # Sert à résoudre l'image du repo-server et l'appVersion du chart kyverno.
+  # Ce n'est PAS le helm qui rend le dépôt : celui-là est dans l'image ArgoCD,
+  # et c'est tout l'objet de la tâche render-argocd.
+  # renovate: datasource=github-releases depName=helm/helm
   HELM_VERSION: v3.16.4
+  # renovate: datasource=github-releases depName=yannh/kubeconform
   KUBECONFORM_VERSION: v0.6.7
   # Sert à la tâche render-argocd, qui chiffre des secrets factices pour une clé
   # age jetable. Aligné sur la version demandée au poste par le README.
@@ -181,6 +186,31 @@ jobs:
                   if not re.fullmatch(r"v?\d+\.\d+\.\d+", v):
                       echec.append(f"{f}: {c.get('name')} -> '{v}' n'est pas une version exacte")
 
+          # Clés dupliquées dans le workflow lui-même. `yaml.safe_load` les
+          # avale — la dernière gagne — et un job entier peut ainsi être masqué
+          # par un homonyme sans que rien ne le signale. Les manifests rendus
+          # sont couverts par `kubeconform -strict`, ce fichier ne l'est par
+          # personne.
+          class Strict(yaml.SafeLoader):
+              pass
+
+          def sans_doublon(loader, node, deep=False):
+              vus = {}
+              for cle_n, val_n in node.value:
+                  cle = loader.construct_object(cle_n, deep=deep)
+                  if cle in vus:
+                      echec.append(
+                          f".github/workflows/validate.yml: clé dupliquée '{cle}' "
+                          f"ligne {cle_n.start_mark.line + 1}"
+                      )
+                  vus[cle] = loader.construct_object(val_n, deep=deep)
+              return vus
+
+          Strict.add_constructor(
+              yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, sans_doublon
+          )
+          yaml.load(pathlib.Path(".github/workflows/validate.yml").read_text(), Strict)
+
           # Versions d'outils du workflow lui-même. La CLI Kyverno y a échappé
           # longtemps : sa version était enterrée dans une commande curl, pas
           # déclarée en env comme Helm ou kubeconform, et personne ne l'a vue
@@ -202,6 +232,55 @@ jobs:
                               f"validate.yml: job {nom}: version {m.group(1)} codée en dur "
                               f"dans un run:, la déclarer en env comme les autres"
                           )
+
+          # Le catalogue de schémas CRD décide d'un échec de la CI au même titre
+          # qu'un chart : il est épinglé à un commit, jamais à une branche. Une
+          # référence flottante rendrait le verdict de `render-argocd` variable
+          # à dépôt inchangé — et le plus dangereux n'est pas qu'il rougisse,
+          # c'est qu'un schéma assoupli en amont laisse passer ce qu'il refusait.
+          for f in sorted(pathlib.Path("scripts").rglob("*")):
+              if not f.is_file():
+                  continue
+              texte = f.read_text(errors="ignore")
+              lignes = texte.splitlines()
+              # La référence peut être écrite en clair ou passer par une variable
+              # shell ; les deux formes doivent aboutir à un SHA de commit.
+              a_verifier = set()
+              for n, ligne in enumerate(lignes, 1):
+                  for m in re.finditer(
+                      r"raw\.githubusercontent\.com/[\w.-]+/[\w.-]+/([^/\s\"']+)", ligne
+                  ):
+                      ref = m.group(1)
+                      if re.fullmatch(r"[0-9a-f]{40}", ref):
+                          continue
+                      var = re.fullmatch(r"\$\{?(\w+)\}?", ref)
+                      if var:
+                          a_verifier.add(var.group(1))
+                          continue
+                      echec.append(
+                          f"{f}:{n}: schéma tiré de la référence '{ref}' — "
+                          f"épingler un SHA de commit, une branche rendrait le "
+                          f"verdict de la CI variable à dépôt inchangé"
+                      )
+              # Chaque variable ainsi employée doit valoir un SHA, et porter une
+              # annotation Renovate — sans quoi elle serait épinglée pour de bon,
+              # ce qui n'est pas mieux qu'une branche.
+              for nom in sorted(a_verifier):
+                  m = re.search(rf'^\s*{nom}="([^"]*)"\s*$', texte, re.M)
+                  if not m:
+                      echec.append(f"{f}: {nom} employée comme référence mais jamais affectée")
+                      continue
+                  if not re.fullmatch(r"[0-9a-f]{40}", m.group(1)):
+                      echec.append(
+                          f"{f}: {nom} vaut '{m.group(1)}' — ce n'est pas un SHA de commit"
+                      )
+                      continue
+                  avant = texte[:m.start()].splitlines()
+                  if not (avant and "renovate:" in avant[-1]):
+                      echec.append(
+                          f"{f}: {nom} n'a pas d'annotation `# renovate:` juste "
+                          f"au-dessus : le SHA ne serait jamais mis à jour"
+                      )
 
           # Tags d'images dans les manifests
           for base in ("platform", "data", "workloads", "observability", "bootstrap"):
@@ -299,49 +378,3 @@ jobs:
         with:
           node-version: "22"
       - run: npx --yes --package renovate -- renovate-config-validator --strict
-
-  # -------------------------------------------------------------------------
-  # La tâche `render` ci-dessus rend avec le kustomize et le helm du runner.
-  # Celle-ci rend avec ceux du repo-server d'ArgoCD, dans son image, avec le
-  # binaire ksops installé comme le fait l'initContainer et les buildOptions
-  # lues dans la ConfigMap argocd-cm rendue.
-  #
-  # Les deux ne testent pas la même chose, et c'est la raison d'être de celle-ci :
-  # un dépôt dont tous les manifests sont valides peut rester irrendable par le
-  # cluster si les binaires du repo-server sont incompatibles entre eux. C'est
-  # arrivé — voir docs/adr/0001-kustomize-de-ksops-incompatible-avec-helm-4.md —
-  # et aucun contrôle ne l'avait vu.
-  #
-  # AUCUN SECRET. Une clé age jetable est générée à chaque exécution et des
-  # secrets factices sont fabriqués depuis les gabarits `*.example.yaml`. La
-  # vraie clé n'existe nulle part dans cette CI, qui tourne sans identifiant et
-  # sur des pull requests venant de forks.
-  #
-  # Cette tâche DOIT être un contrôle requis de la protection de branche : c'est
-  # elle qui garde les montées de version d'ArgoCD, de KSOPS et de Helm.
-  render-argocd:
-    name: rendu par le repo-server
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: azure/setup-helm@v4
-        with:
-          version: ${{ env.HELM_VERSION }}
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install --quiet pyyaml
-
-      - name: Installer age et sops
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq age
-          # Le tag porte le préfixe `v`, pas le nom de l'actif : v3.9.4 ->
-          # sops_3.9.4_amd64.deb. C'est la même URL que celle du README.
-          curl -fsSLo /tmp/sops.deb \
-            "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops_${SOPS_VERSION#v}_amd64.deb"
-          sudo dpkg -i /tmp/sops.deb
-
-      - name: La chaîne d'outils du repo-server rend tout le dépôt
-        run: bash scripts/render-argocd.sh

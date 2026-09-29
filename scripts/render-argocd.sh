@@ -55,6 +55,27 @@ SORTIE="${1:-$TRAVAIL/rendu}"
 # serait fragile : elle est posée ici et mentionnée dans le message d'aide.
 VERSION_K8S="${VERSION_K8S:-1.36.0}"
 
+# ---------------------------------------------------------------------------
+# Catalogue de schémas CRD, épinglé à un commit.
+#
+# Il fournit les schémas que le schéma Kubernetes standard ne connaît pas :
+# IngressRoute, Cluster CNPG, ScaledObject, ClusterPolicy, TeleportRoleV7.
+#
+# POURQUOI UN SHA ET PAS `main`. Un contrôle de conformité qui suit une branche
+# n'est pas un contrôle : son verdict change sans qu'aucun commit du dépôt ne
+# bouge. Une pull request verte le matin peut être rouge l'après-midi — et le
+# plus dangereux des deux est l'inverse, un schéma assoupli en amont qui laisse
+# passer ce qu'il refusait la veille. C'est la même règle que pour les charts et
+# les images : ce qui décide d'un échec est épinglé.
+#
+# Renovate fait avancer ce digest comme il fait avancer un chart, par pull
+# request relue. La tâche `pinning` refuse tout retour à une branche, et refuse
+# aussi ce SHA sans l'annotation ci-dessous — épinglé pour de bon ne vaut pas
+# mieux que flottant.
+# renovate: datasource=git-refs depName=datreeio/CRDs-catalog packageName=https://github.com/datreeio/CRDs-catalog currentValue=main
+CATALOGUE_CRDS_SHA="ad3b08c5045129d7bb1eeffd8e61719b2c8dd1e2"
+CATALOGUE_CRDS="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CATALOGUE_CRDS_SHA}"
+
 nettoyer() {
   docker volume rm -f "$VOL_REPO" "$VOL_TOOLS" "$VOL_OUT" >/dev/null 2>&1 || true
   rm -rf "$TRAVAIL"
@@ -297,16 +318,23 @@ echo "── 5. Validation des schémas, sur CE rendu"
 #
 # Plutôt qu'exclure le kind — ce qui retirerait aussi la validation de tout le
 # reste de la ressource — on récupère le schéma amont et on en retire le SEUL
-# mot-clé fautif. Il y en a cinq, tous des durées Teleport. Le schéma corrigé
-# est régénéré à chaque exécution : rien n'est vendorisé, et une évolution du
-# CRD est reprise automatiquement.
+# mot-clé fautif. Il y en a cinq, tous des durées Teleport.
+#
+# Le schéma corrigé est régénéré à chaque exécution, donc rien n'est vendorisé —
+# mais il est dérivé du MÊME commit épinglé que le reste du catalogue, et non de
+# la branche. Sans quoi le correctif porterait sur une version du schéma et la
+# validation sur une autre.
+#
+# Le nombre de `format: duration` retirés est vérifié : s'il tombe à zéro, c'est
+# que le catalogue a corrigé le champ en amont et que ce contournement n'a plus
+# lieu d'être. Mieux vaut l'apprendre par un échec au prochain bump de digest
+# que le traîner des années.
 SCHEMAS="$TRAVAIL/schemas/resources.teleport.dev"
 mkdir -p "$SCHEMAS"
-python3 - "$SCHEMAS" <<'PY'
+python3 - "$SCHEMAS" "$CATALOGUE_CRDS" <<'PY'
 import json, pathlib, sys, urllib.request
 
-URL = ("https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/"
-       "resources.teleport.dev/teleportrolev7_v1.json")
+URL = f"{sys.argv[2]}/resources.teleport.dev/teleportrolev7_v1.json"
 schema = json.loads(urllib.request.urlopen(URL, timeout=30).read())
 
 retires = 0
@@ -323,6 +351,12 @@ def nettoyer(o):
             nettoyer(v)
 
 nettoyer(schema)
+if retires == 0:
+    raise SystemExit(
+        "  Aucun `format: duration` dans le schéma TeleportRoleV7 du commit "
+        "épinglé.\n  Le catalogue l'a probablement corrigé en amont : retirer "
+        "ce contournement\n  et le schéma local, puis relancer."
+    )
 cible = pathlib.Path(sys.argv[1]) / "teleportrolev7_v1.json"
 cible.write_text(json.dumps(schema))
 print(f"  schéma TeleportRoleV7 corrigé : {retires} `format: duration` retirés")
@@ -334,7 +368,7 @@ kubeconform \
   -kubernetes-version "$VERSION_K8S" \
   -schema-location default \
   -schema-location "$TRAVAIL/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
-  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+  -schema-location "$CATALOGUE_CRDS/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
   -ignore-missing-schemas \
   "$SORTIE"/*.yaml
 
