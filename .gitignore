@@ -30,6 +30,15 @@ kubeconfig
 # que dans une copie de travail.
 charts/
 
+# Relevés de diagnostic déposés à la racine pendant une investigation : sortie
+# de `kubectl describe`, journaux de pod, historiques git. Ils décrivent un état
+# transitoire du cluster, pas l'état désiré — soit l'exact contraire de ce que
+# ce dépôt contient. Deux d'entre eux ont été committés par mégarde, et sur un
+# dépôt public le risque dépasse le fichier parasite : un relevé peut contenir
+# une variable d'environnement ou un jeton.
+diag*.txt
+*-server.txt
+
 # Artefacts locaux
 .DS_Store
 *.swp
