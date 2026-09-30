@@ -206,7 +206,7 @@ trois autres passent, `teleport-tls` et les deux ConfigMap de Teleport résolus.
 Le contrôle garde donc sa valeur pour l'avenir : c'est un retour de `api-migrate`
 en PreSync — ou un nouveau hook construit sur le même malentendu — qu'il refuse.
 
-## Ce que cette décision ne règle pas
+## worker et emitter : pas d'ordonnancement, une convergence
 
 **Les sync waves ne traversent pas les Applications.** `worker` et `emitter`
 vivent dans `workloads/worker`, une Application distincte, et montent le même
@@ -214,18 +214,46 @@ vivent dans `workloads/worker`, une Application distincte, et montent le même
 migration : les deux Applications portent la wave 7 de la root-app et se
 synchronisent en parallèle.
 
-Une reconstruction depuis zéro ne s'y **arrête** pas — elle converge — mais elle
-traverse une fenêtre bruyante : les pods `worker` et `emitter` restent en
-`CreateContainerConfigError` tant que la vague -1 de `api` n'a pas créé les deux
-ressources, puis démarrent aussitôt après, c'est-à-dire **avant** que la
-migration de la vague 0 soit terminée. Le générateur, qui purge les comptes
-expirés dès son démarrage, tombe alors sur un schéma vide et redémarre en boucle
-jusqu'à ce que la migration passe.
+**Décision : on ne les ordonne pas.** Porter `worker` en wave 8 ferait attendre
+la santé de l'API à chaque synchronisation du worker, y compris quand seule son
+image change. Le gain ne concerne que la reconstruction depuis zéro, et elle
+converge seule — voici comment.
 
-Le remède est d'une ligne — porter l'Application `worker` en wave 8, la root-app
-attendant alors que `api` soit saine — et il a un coût : chaque synchronisation
-du worker attendrait la santé de l'API, y compris quand seule l'image du worker
-change. L'arbitrage n'est pas rendu ici.
+1. **`worker` et `emitter` partent en `CreateContainerConfigError`** tant que la
+   vague -1 de `api` n'a pas créé `api-config` et `api-secrets`. Ce n'est pas un
+   échec terminal : le pod reste planifié, et le kubelet retente la création du
+   conteneur à chaque resynchronisation du pod. Dès que les deux ressources
+   existent, les conteneurs démarrent, sans intervention ni redémarrage du pod.
+2. **`worker` tourne alors normalement.** Il ne touche plus la base — le port
+   5432 lui est fermé par NetworkPolicy — et consomme un stream vide.
+3. **`emitter` démarre avant la fin de la migration** (vague 0), et sa purge de
+   démarrage tombe sur un schéma absent : il sort en erreur et passe en
+   CrashLoopBackOff. Le kubelet le relance avec un délai qui double à chaque
+   échec, **plafonné à cinq minutes**. Il repart donc au plus tard cinq minutes
+   après la fin de la migration, et se stabilise.
+
+Rien dans cette séquence n'exige d'action. Elle a un coût d'affichage : pendant
+la fenêtre, l'Application `worker` apparaît `Progressing`, puis `Degraded` si
+`emitter` n'est pas disponible dans le `progressDeadlineSeconds` de dix minutes
+de son Deployment — ce qui arrive si la migration elle-même approche de son
+`activeDeadlineSeconds`. Elle redevient `Healthy` d'elle-même.
+
+**Point à observer pendant RECON-01.** La convergence est déduite du
+comportement du kubelet et d'ArgoCD, pas encore constatée sur une reconstruction
+réelle. Pendant l'exercice, relever :
+
+- l'heure à laquelle `api-config` apparaît, et celle à laquelle `worker` et
+  `emitter` quittent `CreateContainerConfigError` ;
+- le nombre de redémarrages d'`emitter`
+  (`kube_pod_container_status_restarts_total`) et l'heure de fin du Job
+  `api-migrate` ;
+- le délai entre la fin du Job et la disponibilité d'`emitter`. **Au-delà de cinq
+  minutes, ce n'est plus l'ordonnancement** : c'est un vrai défaut, à traiter
+  comme tel ;
+- si `worker` passe par `Degraded`, et combien de temps.
+
+Si l'exercice montre une fenêtre inacceptable, le remède reste d'une ligne —
+`worker` en wave 8 — et cet ADR sera amendé avec les mesures.
 
 ## Conséquences
 
