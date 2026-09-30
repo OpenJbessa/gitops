@@ -39,6 +39,6 @@ generatorOptions:
 # ---------------------------------------------------------------------------
 images:
   - name: ghcr.io/openjbessa/api
-    newTag: sha-REMPLACER_PAR_LE_PREMIER_DEPLOIEMENT
+    newTag: sha-f065b66b9bf533341ac048c667db7015603f36ab
   - name: ghcr.io/openjbessa/api-nginx
-    newTag: sha-REMPLACER_PAR_LE_PREMIER_DEPLOIEMENT
+    newTag: sha-f065b66b9bf533341ac048c667db7015603f36ab
