@@ -181,6 +181,97 @@ annotation Renovate — épinglé pour de bon ne vaut pas mieux que flottant —
 une clé dupliquée dans le workflow, que `yaml.safe_load` avalait en silence.
 Les quatre ont été éprouvées par régression volontaire avant d'être retenues.
 
+## Suite : le correctif a mis le repo-server en CrashLoopBackOff
+
+Après fusion, le nouveau pod repo-server n'a jamais démarré :
+
+```
+error mounting ".../volume-subpaths/custom-tools/repo-server/0" to rootfs
+at "/usr/local/bin/kustomize": ... not a directory
+```
+
+Le pod portait la NOUVELLE commande d'initContainer — `ksops install
+/custom-tools`, sans `--with-kustomize` — et l'ANCIEN montage
+`/usr/local/bin/kustomize` avec `subPath: kustomize`. Le binaire n'était donc
+plus produit, mais le montage le réclamait toujours.
+
+Ce qui rend la panne illisible est le comportement du kubelet : un `subPath`
+dont la source est absente n'échoue pas au montage. Le kubelet **crée le chemin
+manquant, et il le crée comme un répertoire**. Le conteneur meurt ensuite sur
+un bind-mount de répertoire vers un fichier, avec un message qui ne nomme ni le
+binaire absent ni l'initContainer qui aurait dû le produire.
+
+`bootstrap/argocd-values.yaml` était pourtant correct, sur la branche comme sur
+`main` : le rendu du chart ne produit que le montage `ksops`. L'écart était
+dans l'objet vivant, pas dans le manifeste — signature d'un champ co-détenu par
+un autre gestionnaire d'application côté serveur. ArgoCD applique en
+`ServerSideApply=true` ; retirer une entrée de sa configuration ne la supprime
+que s'il en est le seul propriétaire. L'installation d'amorçage par
+`helm install` est le co-propriétaire le plus probable — supprimer le secret de
+release Helm (étape 7 de l'amorçage) ne retire pas la propriété des champs.
+
+### Remédiation, sans toucher au pod qui sert
+
+Le Deployment a un réplica et aucune `strategy` explicite : RollingUpdate par
+défaut, `maxUnavailable` 25 % arrondi à **0** et `maxSurge` à 1. L'ancien pod
+reste donc Available tant que le nouveau n'est pas Ready — c'est ce qui a
+permis au cluster de continuer à se synchroniser pendant la panne, et c'est ce
+qui rend la correction sûre.
+
+```bash
+# 1. Constater qui détient les champs (lecture seule)
+kubectl -n argocd get deploy argocd-repo-server \
+  -o jsonpath='{range .metadata.managedFields[*]}{.manager}{"\t"}{.operation}{"\n"}{end}'
+
+# 2. Retirer l'entrée résiduelle, par sa clé de fusion et non par son index
+kubectl -n argocd patch deployment argocd-repo-server --type=strategic -p \
+  '{"spec":{"template":{"spec":{"containers":[{"name":"repo-server",
+    "volumeMounts":[{"mountPath":"/usr/local/bin/kustomize","$patch":"delete"}]}]}}}}'
+
+# 3. Attendre — cette commande ne supprime rien, elle observe
+kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=180s
+
+# 4. Vérifier que le montage a disparu
+kubectl -n argocd get deploy argocd-repo-server \
+  -o jsonpath='{.spec.template.spec.containers[0].volumeMounts[*].mountPath}'
+```
+
+Le patch crée un nouveau ReplicaSet. Le pod en échec occupe le créneau de surge
+et sera retiré pour le libérer ; **l'ancien pod, lui, n'est remplacé qu'une fois
+le nouveau Ready**. Aucune étape ne le supprime.
+
+`Replace=true` ou `Force=true` dans les `syncOptions` auraient réglé le cas
+d'autorité, et c'est précisément ce qu'il ne faut pas faire ici : ils
+remplacent l'objet entier, donc recréent le repo-server — en supprimant le pod
+qui sert les rendus, au moment exact où l'on en dépend.
+
+### Ce que la CI ne voyait pas, et ce qu'elle voit maintenant
+
+`render-argocd.sh` reproduisait le repo-server sur deux points faux :
+
+1. **il copiait les binaires (`cp`) là où le pod les monte en `subPath`.** Une
+   source absente fait échouer `cp` bruyamment ; elle fait créer un répertoire
+   au kubelet, puis mourir le conteneur. Deux mécanismes, deux pannes, et c'est
+   la seconde qui compte ;
+2. **il décidait quoi copier d'après une règle écrite à la main sur les
+   values** — « `/usr/local/bin/kustomize` est-il monté ? » — et non d'après le
+   pod rendu. Il ne pouvait voir ni un montage venu d'ailleurs dans le chart, ni
+   un chemin qu'on n'avait pas prévu.
+
+La section 3 du script dérive désormais tout du Deployment rendu : quel volume
+d'outils est rempli par initContainer, par quelles images et commandes, et
+quels `subPath` le conteneur principal monte. Elle exécute les initContainers
+tels que déclarés, puis vérifie que **chaque `subPath` monté existe comme
+fichier régulier**. Un montage sans producteur fait échouer la tâche, avec le
+message qui nomme la cause.
+
+Cette vérification ferme le trou au niveau du manifeste — celui qui aurait
+laissé partir un demi-changement, et le cas s'est présenté deux fois pendant
+l'écriture de ce lot. Elle ne voit pas la dérive de l'objet vivant : aucune
+tâche de CI ne parle au cluster, et ce dépôt ne détient aucun identifiant. Ce
+trou-là est fermé par la remédiation ci-dessus et par le fait que le manifeste
+est, lui, correct.
+
 ## Conséquences
 
 - Une classe entière de régressions devient visible : celles où la chaîne

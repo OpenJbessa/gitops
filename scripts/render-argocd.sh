@@ -132,42 +132,85 @@ raise SystemExit("ConfigMap argocd-cm introuvable dans le rendu")
 PY
 )
 
-# L'image KSOPS, dans l'initContainer qui l'installe.
-IMAGE_KSOPS="$(grep -oE 'viaductoss/ksops:[^"'"'"' ]+' "$RACINE/bootstrap/argocd-values.yaml" | head -1)"
-[ -n "$IMAGE_KSOPS" ] || { echo "  image ksops introuvable dans bootstrap/argocd-values.yaml"; exit 1; }
-
-# Le kustomize qui rendra le dépôt est-il celui de l'image, ou celui que KSOPS
-# installe et qu'on monte par-dessus ? C'est toute la question de l'ADR 0001, et
-# le script doit reproduire ce que disent les values, pas ce qu'on souhaite.
+# ---------------------------------------------------------------------------
+# Le contrat du volume d'outils, lu dans le POD RENDU et non dans les values.
 #
-# La lecture se fait sur le YAML et non par `grep` : le fichier PARLE de
-# `--with-kustomize` dans un commentaire expliquant pourquoi il ne l'utilise
-# plus, et un grep y voyait la configuration fautive.
-read -r REMPLACE_KUSTOMIZE INSTALLE_KUSTOMIZE < <(python3 - "$RACINE" <<'PY'
-import pathlib, sys, yaml
-v = yaml.safe_load((pathlib.Path(sys.argv[1]) / "bootstrap/argocd-values.yaml").read_text())
-rs = v.get("repoServer") or {}
-# Le kustomize effectivement exécuté : celui monté sur /usr/local/bin/kustomize.
-monte = any((m.get("mountPath") == "/usr/local/bin/kustomize")
-            for m in (rs.get("volumeMounts") or []))
-# Et celui que l'initContainer installe dans le volume partagé.
-installe = any("--with-kustomize" in (c.get("command") or [])
-               for c in (rs.get("initContainers") or []))
-print(int(monte), int(installe))
-PY
-)
+# C'est la leçon d'un CrashLoopBackOff en production : les values disaient une
+# chose, le pod en faisait une autre. Ce script lisait `repoServer.volumeMounts`
+# avec une règle écrite à la main sur un chemin précis — il ne pouvait voir ni
+# un montage venu d'ailleurs dans le chart, ni un chemin qu'on n'avait pas
+# prévu. Tout ce qui suit est donc dérivé du Deployment rendu :
+#
+#   - quels initContainers écrivent dans le volume d'outils, et où ;
+#   - quels `subPath` de ce volume le conteneur principal monte, et sur quoi.
+#
+# Rien n'est codé en dur, pas même le nom du volume : il est déduit du montage
+# que les initContainers partagent avec le conteneur principal.
+# ---------------------------------------------------------------------------
+python3 - "$TRAVAIL/argocd-rendu.yaml" > "$TRAVAIL/outils.json" <<'PY'
+import json, sys, yaml
 
-if [ "$REMPLACE_KUSTOMIZE" = 1 ] && [ "$INSTALLE_KUSTOMIZE" = 0 ]; then
-  echo "  INCOHÉRENCE : /usr/local/bin/kustomize est monté depuis custom-tools,"
-  echo "  mais l'initContainer n'installe pas de kustomize (--with-kustomize absent)."
-  echo "  Le repo-server démarrerait avec un kustomize manquant."
-  exit 1
-fi
+for d in yaml.safe_load_all(open(sys.argv[1])):
+    if (isinstance(d, dict) and d.get("kind") == "Deployment"
+            and "repo-server" in d["metadata"]["name"]):
+        sp = d["spec"]["template"]["spec"]
+        break
+else:
+    raise SystemExit("Deployment repo-server introuvable dans le rendu")
+
+principal = sp["containers"][0]
+
+# Le volume d'outils : celui dont le conteneur principal monte des `subPath` et
+# qu'un initContainer monte en entier pour le remplir.
+inits = sp.get("initContainers") or []
+candidats = {
+    m["name"] for m in (principal.get("volumeMounts") or []) if m.get("subPath")
+} & {
+    m["name"] for c in inits for m in (c.get("volumeMounts") or []) if not m.get("subPath")
+}
+# Et il doit être un emptyDir : un volume persistant serait déjà peuplé, un
+# secret ou une ConfigMap n'aurait pas besoin d'initContainer.
+volumes = {v["name"]: v for v in sp.get("volumes") or []}
+candidats = {n for n in candidats if "emptyDir" in volumes.get(n, {})}
+
+if len(candidats) != 1:
+    raise SystemExit(
+        f"Attendu un seul volume d'outils rempli par initContainer, trouvé {sorted(candidats)}"
+    )
+volume = candidats.pop()
+
+remplisseurs = []
+for c in inits:
+    for m in c.get("volumeMounts") or []:
+        if m["name"] == volume and not m.get("subPath"):
+            remplisseurs.append({
+                "nom": c["name"],
+                "image": c["image"],
+                "commande": (c.get("command") or []) + (c.get("args") or []),
+                "montage": m["mountPath"],
+            })
+
+attendus = [
+    {"subPath": m["subPath"], "destination": m["mountPath"]}
+    for m in principal.get("volumeMounts") or []
+    if m["name"] == volume and m.get("subPath")
+]
+
+json.dump({"volume": volume, "remplisseurs": remplisseurs, "attendus": attendus},
+          sys.stdout, ensure_ascii=False)
+PY
 
 echo "  image argocd      : $IMAGE_ARGOCD   (chart argo-cd $CHART_VERSION)"
-echo "  image ksops       : $IMAGE_KSOPS"
 echo "  buildOptions      : $BUILD_OPTIONS"
-echo "  kustomize de KSOPS monté par-dessus celui de l'image : $([ "$REMPLACE_KUSTOMIZE" = 1 ] && echo OUI || echo non)"
+python3 - "$TRAVAIL/outils.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"  volume d'outils   : {d['volume']}")
+for r in d["remplisseurs"]:
+    print(f"    rempli par      : {r['nom']} ({r['image']}) -> {r['montage']}")
+for a in d["attendus"]:
+    print(f"    monté           : {a['subPath']} -> {a['destination']}")
+PY
 
 echo
 echo "── 2. Clé age jetable et secrets factices"
@@ -202,14 +245,64 @@ done < <(git -C "$RACINE" ls-files '*.example.yaml')
 echo "  $NB_SECRETS secret(s) factice(s) chiffré(s) pour la clé jetable"
 
 echo
-echo "── 3. Binaire ksops, extrait comme le fait l'initContainer"
+echo "── 3. Outils du repo-server, et cohérence du volume partagé"
 
+# On exécute les initContainers tels que le Deployment les déclare — même image,
+# même commande, même point de montage — puis on vérifie que CHAQUE `subPath`
+# monté par le conteneur principal existe bel et bien, et comme un FICHIER.
+#
+# POURQUOI CE CONTRÔLE EXISTE. Un montage `subPath` dont la source est absente
+# n'échoue pas au montage : le kubelet crée le chemin manquant, et il le crée
+# comme un RÉPERTOIRE. Le conteneur meurt alors au démarrage sur une erreur qui
+# ne nomme ni le binaire ni l'initContainer :
+#
+#   error mounting ... to rootfs at "/usr/local/bin/kustomize": not a directory
+#
+# C'est ce qui a mis le repo-server en CrashLoopBackOff après que
+# `--with-kustomize` a été retiré de l'initContainer : le montage, lui, était
+# resté. La version précédente de ce script ne pouvait pas le voir — elle
+# copiait les binaires avec `cp`, ce qui échoue bruyamment et autrement, et
+# elle décidait quoi copier d'après une règle écrite à la main sur les values
+# plutôt que d'après le pod rendu.
 docker volume create "$VOL_TOOLS" >/dev/null
-INSTALL_ARGS=(install)
-[ "$INSTALLE_KUSTOMIZE" = 1 ] && INSTALL_ARGS=(install --with-kustomize)
-docker run --rm --user 0:0 -v "$VOL_TOOLS:/custom-tools" \
-  --entrypoint /usr/local/bin/ksops "$IMAGE_KSOPS" \
-  "${INSTALL_ARGS[@]}" /custom-tools
+
+python3 - "$TRAVAIL/outils.json" > "$TRAVAIL/remplir.sh" <<'PY'
+import json, shlex, sys
+d = json.load(open(sys.argv[1]))
+for r in d["remplisseurs"]:
+    cmd = " ".join(shlex.quote(x) for x in r["commande"])
+    print(f'echo "  {r["nom"]} :"')
+    print(f'docker run --rm --user 0:0 -v "$VOL_TOOLS:{r["montage"]}" '
+          f'--entrypoint {shlex.quote(r["commande"][0])} {shlex.quote(r["image"])} '
+          + " ".join(shlex.quote(x) for x in r["commande"][1:]))
+PY
+. "$TRAVAIL/remplir.sh"
+
+# Le verdict : tout `subPath` monté doit exister comme fichier régulier.
+echo
+python3 - "$TRAVAIL/outils.json" > "$TRAVAIL/verifier.sh" <<'PY'
+import json, shlex, sys
+d = json.load(open(sys.argv[1]))
+print("manque=0")
+for a in d["attendus"]:
+    sp = shlex.quote(a["subPath"])
+    dst = shlex.quote(a["destination"])
+    print(f'''if [ -f /outils/{a["subPath"]} ]; then
+  printf "  %-12s -> %-28s OK\\n" {sp} {dst}
+else
+  printf "  %-12s -> %-28s ABSENT\\n" {sp} {dst}
+  manque=1
+fi''')
+print("exit $manque")
+PY
+if ! docker run --rm -i -v "$VOL_TOOLS:/outils" busybox sh -s < "$TRAVAIL/verifier.sh"; then
+  echo
+  echo "  ÉCHEC : un subPath monté par le conteneur principal n'est produit par"
+  echo "  aucun initContainer. En cluster, le kubelet créerait ce chemin comme un"
+  echo "  RÉPERTOIRE et le repo-server partirait en CrashLoopBackOff sur"
+  echo "  « not a directory ». Retirer le montage, ou le faire produire."
+  exit 1
+fi
 
 echo
 echo "── 4. Rendu de TOUTES les Applications, dans l'image du repo-server"
@@ -274,21 +367,26 @@ tar c -C "$TRAVAIL/repo" . | docker run --rm -i -v "$VOL_REPO:/repo" busybox tar
 # HOME=/ et la clé sous /.config/sops/age : c'est le chemin de montage posé par
 # bootstrap/argocd-values.yaml. On éprouve la convention en même temps que le rendu.
 #
-# Le kustomize monté est celui de KSOPS ou celui de l'image, selon ce que disent
-# les values — voir REMPLACE_KUSTOMIZE plus haut.
+# Les outils sont mis en place d'après le pod rendu, et non d'après une règle
+# écrite ici : chaque `subPath` du volume d'outils est copié à la destination
+# que le Deployment lui donne. La section 3 a déjà garanti qu'ils existent tous.
+python3 - "$TRAVAIL/outils.json" > "$TRAVAIL/repo/.ci-outils.sh" <<'PY'
+import json, shlex, sys
+d = json.load(open(sys.argv[1]))
+for a in d["attendus"]:
+    print(f'cp {shlex.quote("/custom-tools/" + a["subPath"])} {shlex.quote(a["destination"])}')
+PY
+tar c -C "$TRAVAIL/repo" .ci-outils.sh | docker run --rm -i -v "$VOL_REPO:/repo" busybox tar x -C /repo
+
 docker volume create "$VOL_OUT" >/dev/null
 docker run --rm --user 0:0 \
   -v "$VOL_TOOLS:/custom-tools" \
   -v "$VOL_REPO:/repo" \
   -v "$VOL_OUT:/out" \
   -e "BUILD_OPTIONS=$BUILD_OPTIONS" \
-  -e "REMPLACE_KUSTOMIZE=$REMPLACE_KUSTOMIZE" \
   --entrypoint sh "$IMAGE_ARGOCD" -c '
     set -e
-    cp /custom-tools/ksops /usr/local/bin/ksops
-    if [ "$REMPLACE_KUSTOMIZE" = 1 ]; then
-      cp /custom-tools/kustomize /usr/local/bin/kustomize
-    fi
+    sh /repo/.ci-outils.sh
     mkdir -p /.config/sops/age && cp /repo/.ci-age-key /.config/sops/age/keys.txt
     export HOME=/
     echo "  kustomize : $(kustomize version)"

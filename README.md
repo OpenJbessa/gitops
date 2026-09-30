@@ -66,7 +66,7 @@ ne peut donc rien exfiltrer, ce qui compte sur un dépôt public.
 | Tâche | Ce qu'elle attrape |
 |---|---|
 | `secrets` | Clé privée committée, `.enc.yaml` non chiffré, `Secret` en clair, placeholder oublié. Tourne en premier : sur un dépôt public, une valeur poussée est compromise définitivement. |
-| `render-argocd` | **Le rendu qui fait foi.** Reproduit le repo-server avec *ses* binaires — image ArgoCD déployée, binaire ksops installé comme le fait l'initContainer, `kustomize.buildOptions` lues dans `argocd-cm` — rend les vingt Applications, puis valide la sortie avec `kubeconform` contre les schémas de l'API et des CRD. |
+| `render-argocd` | **Le rendu qui fait foi.** Reproduit le repo-server avec *ses* binaires — image ArgoCD déployée, initContainers exécutés tels que le Deployment les déclare, `kustomize.buildOptions` lues dans `argocd-cm` — vérifie que chaque `subPath` monté depuis le volume d'outils est bien produit, rend les vingt Applications, puis valide la sortie avec `kubeconform`. |
 | `budget` | Calcule la réservation mémoire réelle, `max(conteneurs, initContainers) × réplicas`, et échoue au-dessus de 4 600 Mio — pic d'autoscaling inclus. |
 | `pinning` | Version de chart flottante, version d'outil de CI non épinglée ou codée en dur dans un `run:`, catalogue de schémas suivi sur une branche, SHA sans annotation Renovate, image sans tag ou en `latest`, clé dupliquée dans le workflow. |
 | `policies` | `kyverno test` : ce que les ClusterPolicy refusent et ce qu'elles laissent passer, avec une CLI dont la version est vérifiée égale au Kyverno déployé. |
@@ -87,6 +87,16 @@ ne l'a vu :
 exécution et fabrique des secrets factices depuis les gabarits `*.example.yaml`.
 Effet de bord utile — les trois Applications qui exigeaient un secret SOPS, et
 qui n'étaient donc **ni rendues ni validées nulle part**, le sont ici.
+
+**Le volume d'outils du repo-server est vérifié, pas supposé.** Un montage
+`subPath` dont la source n'existe pas n'échoue pas au montage : le kubelet crée
+le chemin manquant, et il le crée comme un *répertoire*. Le conteneur meurt
+ensuite sur « not a directory », sans que le message nomme le binaire absent.
+C'est ce qui a mis le repo-server en CrashLoopBackOff après le retrait du
+kustomize de KSOPS
+([ADR 0001](docs/adr/0001-kustomize-de-ksops-incompatible-avec-helm-4.md)). La
+tâche exécute donc les initContainers tels que déclarés et refuse tout `subPath`
+monté que personne ne produit.
 
 **Le catalogue de schémas CRD est épinglé à un commit**, pas suivi sur `main`.
 Un contrôle de conformité qui suit une branche n'en est pas un : son verdict
