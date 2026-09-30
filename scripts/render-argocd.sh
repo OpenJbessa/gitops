@@ -14,14 +14,24 @@
 # Helm 4, et le générateur `helmCharts:` était inutilisable dans le cluster
 # alors que tous les contrôles de la CI étaient verts.
 #
-# Ce script ne vérifie donc pas le contenu des manifests — les autres tâches
-# s'en chargent — mais UNE seule chose : que la chaîne d'outils réellement
-# déployée sait rendre ce dépôt.
+# Ce script répond d'abord à UNE question : la chaîne d'outils réellement
+# déployée sait-elle rendre ce dépôt. Puis il vérifie les trois choses qu'on ne
+# peut constater nulle part ailleurs, chacune sur ce que le repo-server produit
+# et non sur ce qu'on croit qu'il produira :
+#   - que chaque `subPath` monté depuis le volume d'outils est bien fabriqué par
+#     un initContainer (étape 3). Un subPath dont la source manque ne fait pas
+#     échouer le montage : le kubelet crée un répertoire à la place, et le
+#     conteneur meurt ensuite sur « not a directory » ;
+#   - la conformité aux schémas (étape 5) ;
+#   - qu'aucun hook PreSync n'attend une ressource que la phase Sync n'a pas
+#     encore créée (étape 6). Deux manifests valides peuvent être dans un ordre
+#     impossible, et l'ordre ne se lit que sur le rendu complet.
 #
-# RIEN N'EST CODÉ EN DUR. Les trois versions et les options de build sont lues
-# dans le dépôt, à l'endroit qui fait foi :
+# RIEN N'EST CODÉ EN DUR. Versions, options de build et contrat du volume
+# d'outils sont lus dans le dépôt, à l'endroit qui fait foi :
 #   - image argocd        : rendu du chart argo-cd avec bootstrap/argocd-values.yaml
-#   - image ksops         : l'initContainer de bootstrap/argocd-values.yaml
+#   - volume d'outils     : le Deployment repo-server rendu — initContainers,
+#                           images, commandes et subPath montés
 #   - kustomize.buildOptions : la ConfigMap argocd-cm rendue
 # Une montée de version par Renovate est donc testée telle qu'elle sera déployée.
 #
@@ -471,5 +481,226 @@ kubeconform \
   "$SORTIE"/*.yaml
 
 echo
-echo "RÉSULTAT : la chaîne d'outils du repo-server rend tout le dépôt, et les"
-echo "manifests qu'elle produit sont conformes aux schémas."
+echo "── 6. Aucun hook PreSync ne dépend de la phase Sync"
+
+# ---------------------------------------------------------------------------
+# LA RÈGLE : un hook PreSync ne doit monter aucune ConfigMap ni aucun Secret
+# qui ne soit pas lui-même disponible AVANT la phase PreSync.
+#
+# Pourquoi ce contrôle existe : le Job `api-migrate` était un hook PreSync et
+# montait `api-config` et `api-secrets` par envFrom. Ces deux ressources sont
+# créées par la phase Sync, qui s'exécute APRÈS la phase PreSync en entier. Le
+# premier déploiement réel a donc échoué en CreateContainerConfigError,
+# « configmap api-config not found » — et aucune reconstruction depuis zéro
+# n'aurait pu aboutir. Détaillé dans docs/adr/0002.
+#
+# Rien dans les schémas ne pouvait l'attraper : les deux manifests sont
+# parfaitement valides. C'est l'ORDRE entre eux qui ne l'est pas, et l'ordre ne
+# se lit que sur le rendu complet — celui-ci, celui du repo-server.
+#
+# CE QUE LE CONTRÔLE ACCEPTE, et qui n'est pas une exception de complaisance :
+#   - la ressource est elle-même un hook PreSync, d'une vague antérieure ou
+#     égale (les Jobs de validation de Teleport et leurs ConfigMap) ;
+#   - elle est produite par une Application d'une wave STRICTEMENT antérieure,
+#     la root-app attendant qu'une wave soit saine avant la suivante. À wave
+#     égale, deux Applications se synchronisent en parallèle : aucun ordre ;
+#   - la référence porte `optional: true`, le kubelet démarrant alors sans elle.
+#
+# Un Secret de cert-manager n'existe dans aucun manifeste — il est déclaré par
+# le `spec.secretName` d'un Certificate. Le contrôle le résout, sans quoi le
+# hook de Teleport qui monte `teleport-tls` serait signalé à tort.
+#
+# Les hooks Helm comptent au même titre : le repo-server lit `helm.sh/hook` dès
+# que `argocd.argoproj.io/hook` est absent, et `pre-install` devient PreSync —
+# y compris pour un chart inflaté par kustomize, comme Teleport.
+# ---------------------------------------------------------------------------
+python3 - "$SORTIE" "$RACINE" <<'PY'
+import pathlib, sys, yaml
+
+RENDU = pathlib.Path(sys.argv[1])
+RACINE = pathlib.Path(sys.argv[2])
+
+HELM_VERS_ARGOCD = {
+    "pre-install": "PreSync", "pre-upgrade": "PreSync", "pre-rollback": "PreSync",
+    "post-install": "PostSync", "post-upgrade": "PostSync", "post-rollback": "PostSync",
+    "post-delete": "PostDelete",
+    "test": "Skip", "test-success": "Skip", "test-failure": "Skip",
+}
+
+
+def annotations(doc):
+    return (doc.get("metadata") or {}).get("annotations") or {}
+
+
+def phases(doc):
+    """Phases de synchronisation d'une ressource. Ensemble vide = ressource ordinaire."""
+    ann = annotations(doc)
+    # L'annotation ArgoCD, quand elle existe, masque entièrement les hooks Helm.
+    # C'est l'ordre de `util/hook.IsHook` dans le repo-server.
+    if "argocd.argoproj.io/hook" in ann:
+        return {p.strip() for p in str(ann["argocd.argoproj.io/hook"]).split(",") if p.strip()}
+    if "helm.sh/hook" in ann:
+        return {HELM_VERS_ARGOCD.get(h.strip(), "")
+                for h in str(ann["helm.sh/hook"]).split(",")} - {""}
+    return set()
+
+
+def vague(doc):
+    ann = annotations(doc)
+    # ArgoCD traduit `helm.sh/hook-weight` en sync-wave pour les hooks Helm.
+    for cle in ("argocd.argoproj.io/sync-wave", "helm.sh/hook-weight"):
+        if cle in ann:
+            try:
+                return int(str(ann[cle]).strip())
+            except ValueError:
+                return 0
+    return 0
+
+
+def pod_spec(doc):
+    spec = doc.get("spec") or {}
+    if doc.get("kind") == "Pod":
+        return spec
+    if doc.get("kind") == "CronJob":
+        spec = (spec.get("jobTemplate") or {}).get("spec") or {}
+    tmpl = (spec.get("template") or {}).get("spec")
+    return tmpl if isinstance(tmpl, dict) else None
+
+
+def references(spec):
+    """(kind, nom) de chaque ConfigMap et Secret dont le pod a BESOIN pour démarrer.
+
+    `optional: true` est exclu : le kubelet démarre alors le conteneur sans la
+    valeur, ce qui est précisément ce que cette règle laisse faire.
+    """
+    refs = set()
+
+    def ajouter(kind, source, cle="name"):
+        if isinstance(source, dict) and source.get(cle) and not source.get("optional"):
+            refs.add((kind, source[cle]))
+
+    for c in (spec.get("containers") or []) + (spec.get("initContainers") or []) \
+            + (spec.get("ephemeralContainers") or []):
+        for e in c.get("envFrom") or []:
+            ajouter("ConfigMap", e.get("configMapRef"))
+            ajouter("Secret", e.get("secretRef"))
+        for e in c.get("env") or []:
+            vf = e.get("valueFrom") or {}
+            ajouter("ConfigMap", vf.get("configMapKeyRef"))
+            ajouter("Secret", vf.get("secretKeyRef"))
+
+    for v in spec.get("volumes") or []:
+        ajouter("ConfigMap", v.get("configMap"))
+        ajouter("Secret", v.get("secret"), "secretName")
+        for s in ((v.get("projected") or {}).get("sources")) or []:
+            ajouter("ConfigMap", s.get("configMap"))
+            ajouter("Secret", s.get("secret"))
+
+    for s in spec.get("imagePullSecrets") or []:
+        ajouter("Secret", s)
+
+    return sorted(refs)
+
+
+# Vague de chaque Application, telle que la root-app les ordonne.
+vague_app = {}
+for f in sorted((RACINE / "apps").rglob("*.yaml")):
+    for doc in yaml.safe_load_all(f.read_text()):
+        if isinstance(doc, dict) and doc.get("kind") == "Application":
+            vague_app[doc["metadata"]["name"]] = vague(doc)
+
+# Ce que produit chaque Application, et les hooks PreSync à examiner. Le nom du
+# fichier de rendu EST le nom de l'Application (cf. render.py --plan).
+produit, hooks = {}, []
+for fichier in sorted(RENDU.glob("*.yaml")):
+    app = fichier.stem
+    for doc in yaml.safe_load_all(fichier.read_text()):
+        if not isinstance(doc, dict) or "kind" not in doc:
+            continue
+        meta = doc.get("metadata") or {}
+        ns, nom = meta.get("namespace") or "", meta.get("name")
+        if not nom:
+            continue
+        produit[(ns, doc["kind"], nom)] = (app, doc)
+        if doc["kind"] == "Certificate":
+            secret = (doc.get("spec") or {}).get("secretName")
+            if secret:
+                produit.setdefault((ns, "Secret", secret), (app, None))
+        if "PreSync" in phases(doc) and pod_spec(doc) is not None:
+            hooks.append((app, ns, doc))
+
+echec = []
+for app, ns, doc in hooks:
+    nom = doc["metadata"]["name"]
+    refs = references(pod_spec(doc))
+    print(f"  {app} : hook PreSync {doc['kind']}/{nom} — "
+          f"{len(refs)} référence(s) obligatoire(s)")
+
+    for kind, ref in refs:
+        # Le namespace peut manquer dans le rendu : il vient alors de la
+        # destination de l'Application, que ce rendu ne porte pas.
+        app_source, cible = (produit.get((ns, kind, ref))
+                             or produit.get(("", kind, ref))
+                             or (None, None))
+
+        if app_source is None:
+            echec.append(
+                f"le hook PreSync {doc['kind']}/{nom} ({app}) monte {kind}/{ref}, que ce "
+                f"dépôt ne produit nulle part.\n"
+                f"    Rien ne garantit son existence quand la phase PreSync s'exécute : une "
+                f"reconstruction\n"
+                f"    depuis zéro s'arrêtera en CreateContainerConfigError. Soit {kind}/{ref} "
+                f"devient lui aussi\n"
+                f"    un hook PreSync, soit la référence passe en `optional: true`."
+            )
+            continue
+
+        ph = phases(cible) if cible is not None else set()
+
+        if "PreSync" in ph:
+            if vague(cible) > vague(doc):
+                echec.append(
+                    f"le hook PreSync {doc['kind']}/{nom} ({app}, vague {vague(doc)}) monte "
+                    f"{kind}/{ref},\n"
+                    f"    hook PreSync de vague {vague(cible)} — donc créé APRÈS lui. L'ordre "
+                    f"des vagues\n"
+                    f"    contredit la dépendance."
+                )
+            else:
+                print(f"      {kind}/{ref} : hook PreSync de vague {vague(cible)} — ok")
+            continue
+
+        # Ressource ordinaire, ou hook d'une autre phase : acceptable seulement
+        # si une Application d'une wave strictement antérieure la produit.
+        if app_source != app and vague_app.get(app_source, 0) < vague_app.get(app, 0):
+            origine = "Secret d'un Certificate" if cible is None else "ressource"
+            print(f"      {kind}/{ref} : {origine} de l'Application {app_source} "
+                  f"(wave {vague_app.get(app_source)} < {vague_app.get(app)}) — ok")
+            continue
+
+        quoi = ("une ressource ordinaire, créée par la phase Sync" if not ph
+                else f"un hook de phase {', '.join(sorted(ph))}")
+        ou = ("la même Application" if app_source == app
+              else f"l'Application {app_source}, de wave {vague_app.get(app_source)} — "
+                   f"la même que {app} ou une plus tardive")
+        echec.append(
+            f"le hook PreSync {doc['kind']}/{nom} ({app}) monte {kind}/{ref}, qui est {quoi}\n"
+            f"    dans {ou}.\n"
+            f"    La phase PreSync s'exécute ENTIÈREMENT avant la phase Sync : le pod du hook "
+            f"restera\n"
+            f"    en CreateContainerConfigError et aucun premier déploiement ne pourra "
+            f"aboutir. Passer\n"
+            f"    le hook en phase Sync et ordonner par sync-wave — cf. docs/adr/0002."
+        )
+
+if echec:
+    print()
+    print("\n".join("  ÉCHEC : " + e for e in echec))
+    sys.exit(1)
+print(f"  {len(hooks)} hooks PreSync examinés, aucun ne dépend de la phase Sync.")
+PY
+
+echo
+echo "RÉSULTAT : la chaîne d'outils du repo-server rend tout le dépôt, les"
+echo "manifests qu'elle produit sont conformes aux schémas, et aucun hook PreSync"
+echo "n'attend une ressource que la phase Sync n'a pas encore créée."

@@ -1,10 +1,16 @@
 # Variables non sensibles. Tout ce qui est secret (APP_KEY, identifiants de
 # base) vit dans api-secrets, chiffré par SOPS.
+#
+# Vague -1 : le Job de migration (vague 0) monte ce ConfigMap par envFrom, et
+# son pod reste en CreateContainerConfigError tant qu'il n'existe pas. C'est ce
+# qui a fait échouer le premier déploiement réel — cf. docs/adr/0002.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: api-config
   namespace: apps
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
   labels:
     app.kubernetes.io/name: api
     app.kubernetes.io/part-of: workloads

@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Migrations de base — hook PreSync ArgoCD.
+# Migrations de base — hook Sync ArgoCD, vague 0.
 #
 # Pourquoi un hook et jamais un `artisan migrate` au démarrage du conteneur :
 #   - au démarrage, chaque redémarrage de pod rejouerait la vérification, et un
@@ -9,17 +9,53 @@
 #     de l'API continue de tourner sur l'ancien schéma. C'est exactement le
 #     comportement qu'on veut.
 #
-# `hook-delete-policy: BeforeHookCreation,HookSucceeded` : le Job disparaît
-# quand il réussit, et reste quand il échoue — c'est là qu'on a besoin de ses
-# journaux. `BeforeHookCreation` en plus, parce qu'avec `HookSucceeded` seul un
-# Job en échec survit, garde son nom, et bloque la création du suivant : la
-# synchronisation d'après échoue sur un conflit de nom, pas sur la migration.
+# POURQUOI SYNC ET NON PRESYNC — ce Job a été un hook PreSync, et le premier
+# déploiement réel a échoué dessus :
+#
+#   CreateContainerConfigError — configmap "api-config" not found
+#
+# La phase PreSync s'exécute ENTIÈREMENT avant la phase Sync. Or api-config et
+# api-secrets sont des ressources ordinaires, créées par la phase Sync : au
+# premier déploiement elles n'existent pas encore quand le hook démarre, et son
+# pod ne peut pas être configuré. Ce n'était pas un incident de circonstance,
+# c'était un ordre impossible — aucune reconstruction depuis zéro ne pouvait
+# aboutir, seul un cluster où les deux ressources existaient déjà le masquait.
+#
+# En phase Sync, le hook est ordonné par sync-wave avec les ressources
+# ordinaires, dans une seule et même phase. L'ordre est donc explicite :
+#
+#   vague -1  ConfigMap api-config, Secret api-secrets, NetworkPolicy api
+#   vague  0  CE Job
+#   vague  1  Deployment api
+#
+# ArgoCD attend qu'une vague soit saine avant d'entamer la suivante, et un Job
+# de hook n'est sain qu'une fois terminé avec succès. La garantie recherchée est
+# intacte : la migration tourne après que sa configuration existe, et avant que
+# le nouveau code soit déployé. La vague 0 est écrite explicitement bien qu'elle
+# soit la valeur par défaut — c'est le pivot du plan, pas un reste.
+#
+# Service et IngressRoute restent en vague 0, sans annotation : ils n'ont besoin
+# de rien et rien n'a besoin d'eux. Une IngressRoute sans pod derrière répond
+# 503 quelques secondes, ce qui est déjà le cas à chaque `strategy: Recreate`.
+#
+# `hook-delete-policy: BeforeHookCreation` : le Job SURVIT, qu'il réussisse ou
+# qu'il échoue. Ses journaux sont la seule trace de la dernière migration —
+# `HookSucceeded` les effaçait précisément dans le cas nominal, celui qu'on veut
+# pouvoir relire pour savoir ce qui a été appliqué et quand. C'est la
+# synchronisation SUIVANTE qui supprime le Job, juste avant de recréer le sien :
+# sans cette politique, le Job précédent garderait son nom et la synchronisation
+# échouerait sur un conflit de nom plutôt que sur la migration.
 #
 # Règle de compatibilité des migrations : le hook tourne AVANT que le nouveau
 # Deployment soit appliqué, donc pendant que le code de la version précédente
 # sert encore le trafic. Toute migration doit fonctionner avec ce code — on
 # ajoute d'abord (colonne nullable, table nouvelle), on retire dans une version
 # ultérieure.
+#
+# Ce que ce Job ne couvre pas : worker et emitter lisent la MÊME configuration
+# et sont une autre Application ArgoCD (workloads/worker). Les sync waves ne
+# traversent pas les Applications, et rien ne les retient pendant la migration.
+# Détaillé dans docs/adr/0002.
 # ---------------------------------------------------------------------------
 apiVersion: batch/v1
 kind: Job
@@ -27,8 +63,9 @@ metadata:
   name: api-migrate
   namespace: apps
   annotations:
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
   labels:
     app.kubernetes.io/name: api
     app.kubernetes.io/component: migrate

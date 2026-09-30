@@ -19,6 +19,36 @@ generatorOptions:
   disableNameSuffixHash: true
 
 # ---------------------------------------------------------------------------
+# Vague -1 pour api-secrets, comme pour api-config et la NetworkPolicy : le Job
+# de migration (vague 0) le monte par envFrom et son pod ne démarre pas sans lui.
+#
+# L'annotation est posée ICI et non dans secrets.enc.yaml, et ce n'est pas une
+# commodité. SOPS calcule son MAC sur TOUT le document, y compris les champs
+# laissés en clair par `encrypted_regex` — les métadonnées en font partie.
+# Ajouter deux lignes à la main dans le fichier chiffré invaliderait le MAC, et
+# ksops refuserait de le déchiffrer dans le repo-server : l'Application entière
+# passerait en `Unknown` sur une erreur qui ne parle pas de sync waves.
+#
+# Un patch de fusion et non un patch JSON 6902 : `op: add` sur
+# /metadata/annotations écraserait des annotations existantes, alors que la
+# fusion les complète. Le patch porte sur la sortie du générateur — les
+# transformateurs kustomize s'appliquent aux ressources générées comme aux
+# autres.
+# ---------------------------------------------------------------------------
+patches:
+  - target:
+      version: v1
+      kind: Secret
+      name: api-secrets
+    patch: |-
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: api-secrets
+        annotations:
+          argocd.argoproj.io/sync-wave: "-1"
+
+# ---------------------------------------------------------------------------
 # Tags des images — LE SEUL POINT QUE LA CI APPLICATIVE MODIFIE.
 #
 # Le dépôt applicatif ne parle jamais au cluster. Après avoir construit et signé

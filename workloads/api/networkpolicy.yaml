@@ -6,12 +6,24 @@
 # sens, chaque flux inter-namespace demande DEUX règles — celle-ci pour la
 # sortie de l'API, et sa jumelle côté `data` pour l'entrée dans PostgreSQL ou
 # Redis (data/postgres/networkpolicy.yaml, data/redis/networkpolicy.yaml).
+#
+# Vague -1, avec le ConfigMap et le Secret. Le `podSelector` porte sur
+# `app.kubernetes.io/name: api`, label que le Job de migration reprend : cette
+# règle est donc ce qui autorise la migration à joindre PostgreSQL. ArgoCD
+# applique déjà les NetworkPolicy avant les Job à l'intérieur d'une même vague,
+# mais cet ordre-là est une convention interne d'ArgoCD, non un ordre demandé
+# par ce dépôt. Une dépendance réseau ne se confie pas à un tri implicite : sans
+# cette règle, la migration ne tomberait pas en erreur, elle EXPIRERAIT — et le
+# `activeDeadlineSeconds` de dix minutes du Job ferait échouer la synchronisation
+# bien après qu'on ait cherché ailleurs.
 # ---------------------------------------------------------------------------
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: api
   namespace: apps
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
   labels:
     app.kubernetes.io/name: api
     app.kubernetes.io/part-of: workloads

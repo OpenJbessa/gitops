@@ -10,12 +10,19 @@
 #
 # Le découpage 288 + 32 conserve exactement les 320 Mo précédents : nginx est
 # un ajout de structure, pas de budget.
+#
+# Vague 1 : après le Job de migration (vague 0), donc après que le schéma est à
+# jour. C'est cette annotation qui porte la garantie « jamais du nouveau code
+# sur un ancien schéma » — auparavant c'était la phase PreSync qui la portait,
+# et elle la payait d'un premier déploiement impossible (docs/adr/0002).
 # ---------------------------------------------------------------------------
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api
   namespace: apps
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
   labels:
     app.kubernetes.io/name: api
     app.kubernetes.io/component: http
