@@ -453,8 +453,8 @@ Un piège voisin a été corrigé : dès qu'on fournit un certificat par
 L'**opérateur Teleport** figurait ici. Il ne le devrait plus : il est déployé
 (64 Mo), et c'est lui qui réconcilie `role-platform-admin.yaml` vers l'API
 Teleport. L'argument budgétaire initial reposait sur une estimation que les
-mesures ont invalidée, et le coût de l'étape manuelle `tctl` — un rôle décrit
-dans le dépôt mais jamais appliqué — était plus élevé que ces 64 Mo.
+mesures ont invalidée, et le coût d'un rôle décrit dans le dépôt sans être
+reconcilé par l'opérateur était plus élevé que ces 64 Mo.
 
 ---
 
@@ -576,7 +576,7 @@ Surtout pas la Global API Key, qui donne accès à l'intégralité du compte.
 
 ## Étapes manuelles résiduelles
 
-Cinq, et chacune a une raison de ne pas être automatisée.
+Quatre, et chacune a une raison de ne pas être automatisée.
 
 ### 1. `kubectl apply -f bootstrap/root-app.yaml`
 
@@ -588,24 +588,10 @@ où ArgoCD ne gère encore rien.
 Il contient la clé qui déchiffre tous les autres secrets. Le chiffrer avec SOPS
 serait circulaire.
 
-### 3. Les rôles Teleport
+Les rôles Teleport sont réconciliés par l'opérateur Teleport via la CRD
+`TeleportRoleV7` ; il n'y a donc plus d'étape `tctl create` dans le dépôt.
 
-`platform/teleport/roles.yaml` est une ressource **Teleport**, pas un manifeste
-Kubernetes. Il est volontairement absent de `kustomization.yaml` : ArgoCD ne
-sait pas l'appliquer.
-
-Les matérialiser en CRD imposerait l'opérateur Teleport, soit environ 64 Mo de
-plus — un tiers au-dessus de l'enveloppe allouée à Teleport, déjà dépassée. Le
-fichier reste donc la source de vérité versionnée, appliquée à la main :
-
-```bash
-kubectl exec -i -n teleport deploy/teleport-auth -- \
-  tctl create -f < platform/teleport/roles.yaml
-```
-
-Toute modification passe par une pull request, puis par cette commande.
-
-### 4. L'agent Teleport de l'hôte
+### 3. L'agent Teleport de l'hôte
 
 Le nœud lui-même doit être enrôlé dans Teleport pour que l'accès SSH passe par
 lui. L'agent tourne **sur l'hôte**, hors Kubernetes : un agent conteneurisé ne
@@ -638,7 +624,7 @@ tsh ssh ops@<nœud>      # et la connexion doit aboutir
 
 La fermeture du port 22 elle-même se fait dans le dépôt OpenTofu.
 
-### 5. Le premier tag d'image
+### 4. Le premier tag d'image
 
 `workloads/*/kustomization.yaml` porte `newTag: sha-REMPLACER_PAR_LE_PREMIER_DEPLOIEMENT`.
 Aucune image n'existe encore. Après le premier build signé, la CI applicative
@@ -685,7 +671,7 @@ enregistrements trouvera son volume.
 |---|---|---|
 | Tags d'images | `workloads/*/kustomization.yaml` | Premier build de la CI |
 | Destination Alertmanager | `observability/victoriametrics/alert-values.yaml` | Webhook Discord/Slack ou SMTP |
-| ~~Stream et consumer group~~ | — | **tranché** : file sur listes Laravel, `listName: queues:default` |
+| Stream et consumer group | `workloads/worker/scaledobject.yaml` + `workloads/api/configmap.yaml` | `demo:events`, groupe `workers`, `REDIS_PREFIX: ""` |
 
 ### Enregistrements DNS
 
