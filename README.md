@@ -66,7 +66,7 @@ ne peut donc rien exfiltrer, ce qui compte sur un dépôt public.
 | Tâche | Ce qu'elle attrape |
 |---|---|
 | `secrets` | Clé privée committée, `.enc.yaml` non chiffré, `Secret` en clair, placeholder oublié. Tourne en premier : sur un dépôt public, une valeur poussée est compromise définitivement. |
-| `render-argocd` | **Le rendu qui fait foi.** Reproduit le repo-server avec *ses* binaires — image ArgoCD déployée, binaire ksops installé comme le fait l'initContainer, `kustomize.buildOptions` lues dans `argocd-cm` — rend les vingt Applications, puis valide la sortie avec `kubeconform` contre les schémas de l'API et des CRD. |
+| `render-argocd` | **Le rendu qui fait foi.** Reproduit le repo-server avec *ses* binaires — image ArgoCD déployée, binaire ksops installé comme le fait l'initContainer, `kustomize.buildOptions` lues dans `argocd-cm` — rend toutes les Applications, puis valide la sortie avec `kubeconform` contre les schémas de l'API et des CRD. |
 | `budget` | Calcule la réservation mémoire réelle, `max(conteneurs, initContainers) × réplicas`, et échoue au-dessus de 4 600 Mio — pic d'autoscaling inclus. |
 | `pinning` | Version de chart flottante, version d'outil de CI non épinglée ou codée en dur dans un `run:`, catalogue de schémas suivi sur une branche, SHA sans annotation Renovate, image sans tag ou en `latest`, clé dupliquée dans le workflow. |
 | `policies` | `kyverno test` : ce que les ClusterPolicy refusent et ce qu'elles laissent passer, avec une CLI dont la version est vérifiée égale au Kyverno déployé. |
@@ -128,7 +128,7 @@ python3 scripts/check-budget.py --manifests /tmp/rendered
 
 kyverno test platform/kyverno/tests
 
-# Le rendu qui fait foi : chaîne d'outils du repo-server, les vingt
+# Le rendu qui fait foi : chaîne d'outils du repo-server, toutes les 
 # Applications, puis kubeconform. Demande docker, age, sops et kubeconform, et
 # tire deux images — nettement plus lent, mais c'est lui que la CI exécute.
 bash scripts/render-argocd.sh /tmp/rendu-argocd
@@ -289,7 +289,7 @@ partir d'un seul apply.
 | **4** | `cnpg-operator`, `redis` | CRD `Cluster` et webhook CloudNativePG ; Redis prêt à accepter cache, sessions et file de jobs. |
 | **5** | `postgres` | Base initialisée, rôle `app` créé, service `postgres-rw` résolvable. |
 | **6** | `victoriametrics`, `vmagent`, `vmalert`, `kube-state-metrics`, `grafana`, `gatus` | Collecte et alertes en place **avant** les charges applicatives : le premier démarrage de l'API est donc observé. |
-| **7** | `api`, `web`, `worker` | — |
+| **7** | `api`, `worker`, (`web` est désactivée tant que le front n'existe pas, voir `apps/workloads/web.yaml.disabled`) | — |
 
 Deux ordonnancements internes, invisibles dans cette table :
 
@@ -363,8 +363,8 @@ capacité du nœud        7 939 Mi
 
 | | Mio | Part de l'allocatable |
 |---|---:|---:|
-| Requests au repos | 3 916 | 57 % |
-| Requests au pic worker | 4 300 | 63 % |
+| Requests au repos | 3 828 | 56 % |
+| Requests au pic worker | 4 212 | 62 % |
 | **Limites cumulées au pic** | **6 500** | **95 %** |
 
 Les 63 % de requests sont confortables : l'ordonnanceur garde 2 489 Mio de
