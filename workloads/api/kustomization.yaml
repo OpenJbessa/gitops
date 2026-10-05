@@ -39,6 +39,6 @@ generatorOptions:
 # ---------------------------------------------------------------------------
 images:
   - name: ghcr.io/openjbessa/api
-    newTag: sha-f065b66b9bf533341ac048c667db7015603f36ab
+    newTag: sha-f11443df99ab97765d94c0f5c44b0cec0e0f22d7
   - name: ghcr.io/openjbessa/api-nginx
-    newTag: sha-f065b66b9bf533341ac048c667db7015603f36ab
+    newTag: sha-f11443df99ab97765d94c0f5c44b0cec0e0f22d7
